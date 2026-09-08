@@ -1,0 +1,49 @@
+name: volt-local
+
+services:
+  volt:
+    build: .
+    ports:
+      - "127.0.0.1:${VOLT_PORT:-18184}:18184"
+    environment:
+      VOLT_LISTEN_HOST: 0.0.0.0
+      VOLT_PORT: 18184
+      VOLT_DATA_DIR: /app/data
+      VOLT_VAULT_FILE: /app/data/personal.volt
+      VOLT_DEVICE_KEY_FILE: /run/secrets/volt-device.key
+      VOLT_ACCESS_KEY_FILE: /run/secrets/volt-access-key
+      VOLT_SECURE_COOKIES: "${VOLT_SECURE_COOKIES:-false}"
+      VOLT_TRUST_PROXY: "${VOLT_TRUST_PROXY:-false}"
+      VOLT_AUDIT_RETENTION: "${VOLT_AUDIT_RETENTION:-10000}"
+      VOLT_KERNEL_TOKEN_FILE: /run/secrets/volt-kernel.token
+    volumes:
+      - volt-data:/app/data
+      - type: bind
+        source: "${VOLT_DEVICE_KEY_HOST_PATH:?Set VOLT_DEVICE_KEY_HOST_PATH}"
+        target: /run/secrets/volt-device.key
+        read_only: true
+      - type: bind
+        source: "${VOLT_ACCESS_KEY_HOST_PATH:?Set VOLT_ACCESS_KEY_HOST_PATH}"
+        target: /run/secrets/volt-access-key
+        read_only: true
+      - type: bind
+        source: "${VOLT_KERNEL_TOKEN_HOST_FILE:?Set VOLT_KERNEL_TOKEN_HOST_FILE}"
+        target: /run/secrets/volt-kernel.token
+        read_only: true
+    read_only: true
+    tmpfs:
+      - /tmp:size=32m,noexec,nosuid,nodev
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    pids_limit: 128
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:18184/api/v1/health').then(r=>{if(!r.ok)process.exit(1)}).catch(()=>process.exit(1))"]
+      interval: 15s
+      timeout: 3s
+      retries: 5
+
+volumes:
+  volt-data:

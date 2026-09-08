@@ -1,0 +1,50 @@
+name: Volt CI
+
+on:
+  workflow_call:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: volt-ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - name: Tests, typecheck, build and dependency audit
+        run: |
+          docker run --rm \
+            -v "$PWD:/workspace" -w /workspace \
+            node:24-bookworm-slim@sha256:6f7b03f7c2c8e2e784dcf9295400527b9b1270fd37b7e9a7285cf83b6951452d \
+            sh -eu -c 'npm ci --ignore-scripts && npm audit --omit=dev --audit-level=high && npm run check'
+      - name: Build exact container candidate
+        run: docker build --tag exocortex-volt-ci:${{ github.sha }} .
+      - name: Container health smoke test
+        shell: bash
+        run: |
+          set -euo pipefail
+          secret_dir="$(mktemp -d)"
+          trap 'docker rm -f volt-ci-smoke >/dev/null 2>&1 || true; rm -rf "$secret_dir"' EXIT
+          printf '%s\n' 'volt-ci-access-key-only' > "$secret_dir/access.key"
+          chmod 0444 "$secret_dir/access.key"
+          docker run -d --name volt-ci-smoke \
+            -e VOLT_LISTEN_HOST=0.0.0.0 \
+            -e VOLT_ACCESS_KEY_FILE=/run/secrets/access.key \
+            -v "$secret_dir:/run/secrets:ro" \
+            exocortex-volt-ci:${{ github.sha }}
+          for _ in {1..30}; do
+            status="$(docker inspect --format '{{.State.Health.Status}}' volt-ci-smoke)"
+            [[ "$status" == healthy ]] && exit 0
+            [[ "$status" == unhealthy ]] && docker logs volt-ci-smoke && exit 1
+            sleep 2
+          done
+          docker logs volt-ci-smoke
+          exit 1

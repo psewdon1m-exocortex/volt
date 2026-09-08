@@ -1,0 +1,84 @@
+name: volt
+
+services:
+  volt:
+    image: "${VOLT_IMAGE:?Set VOLT_IMAGE to an immutable release digest}"
+    container_name: exocortex-volt
+    ports:
+      - "127.0.0.1:${VOLT_PORT:-18184}:18184"
+    environment:
+      NODE_ENV: production
+      VOLT_LISTEN_HOST: 0.0.0.0
+      VOLT_PORT: 18184
+      VOLT_DATA_DIR: /app/data
+      VOLT_VAULT_FILE: /app/data/personal.volt
+      VOLT_DEVICE_KEY_FILE: /run/secrets/volt-device.key
+      VOLT_ACCESS_KEY_FILE: /run/secrets/volt-access-key
+      VOLT_SECURE_COOKIES: "${VOLT_SECURE_COOKIES:-true}"
+      VOLT_TRUST_PROXY: "${VOLT_TRUST_PROXY:-true}"
+      VOLT_AUDIT_RETENTION: "${VOLT_AUDIT_RETENTION:-10000}"
+      VOLT_KERNEL_TOKEN_FILE: /run/secrets/volt-kernel.token
+      NEPTUNE_SOCKET_PATH: /run/neptune/neptuned.sock
+      NEPTUNE_PROJECT_ID: "${NEPTUNE_PROJECT_ID:-volt}"
+      NEPTUNE_CONTROL_TOKEN_FILE: /run/secrets/neptune-control-token
+      NEPTUNE_EXPORT_TOKEN_FILE: /run/secrets/neptune-export-token
+      UPDATER_SOCKET_PATH: /run/exocortex/updater.sock
+      UPDATER_REGISTERED_HEAD_ID: "${UPDATER_REGISTERED_HEAD_ID:-volt-production}"
+      UPDATER_CONTROL_TOKEN_FILE: /run/secrets/updater-control-token
+    volumes:
+      - volt-data:/app/data
+      - type: bind
+        source: "${VOLT_DEVICE_KEY_HOST_PATH:?Set VOLT_DEVICE_KEY_HOST_PATH}"
+        target: /run/secrets/volt-device.key
+        read_only: true
+      - type: bind
+        source: "${VOLT_ACCESS_KEY_HOST_PATH:?Set VOLT_ACCESS_KEY_HOST_PATH}"
+        target: /run/secrets/volt-access-key
+        read_only: true
+      - type: bind
+        source: "${VOLT_KERNEL_TOKEN_HOST_FILE:?Set VOLT_KERNEL_TOKEN_HOST_FILE in .env}"
+        target: /run/secrets/volt-kernel.token
+        read_only: true
+      - type: bind
+        source: "${NEPTUNE_SOCKET_DIR:-/run/neptune}"
+        target: /run/neptune
+      - type: bind
+        source: "${UPDATER_SOCKET_DIR:-/run/exocortex}"
+        target: /run/exocortex
+      - type: bind
+        source: "${NEPTUNE_CONTROL_TOKEN_HOST_FILE:?Set NEPTUNE_CONTROL_TOKEN_HOST_FILE in .env}"
+        target: /run/secrets/neptune-control-token
+        read_only: true
+      - type: bind
+        source: "${NEPTUNE_EXPORT_TOKEN_HOST_FILE:?Set NEPTUNE_EXPORT_TOKEN_HOST_FILE in .env}"
+        target: /run/secrets/neptune-export-token
+        read_only: true
+      - type: bind
+        source: "${UPDATER_CONTROL_TOKEN_HOST_FILE:?Set UPDATER_CONTROL_TOKEN_HOST_FILE in .env}"
+        target: /run/secrets/updater-control-token
+        read_only: true
+    group_add:
+      - "${NEPTUNE_SOCKET_GID:?Set NEPTUNE_SOCKET_GID during Neptune installation}"
+      - "${UPDATER_SOCKET_GID:?Set UPDATER_SOCKET_GID during VPS installation}"
+    read_only: true
+    tmpfs:
+      - /tmp:size=32m,noexec,nosuid,nodev
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    pids_limit: 128
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:18184/api/v1/health').then(r=>{if(!r.ok)process.exit(1)}).catch(()=>process.exit(1))"]
+      interval: 15s
+      timeout: 3s
+      retries: 5
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+volumes:
+  volt-data:

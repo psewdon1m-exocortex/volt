@@ -1,0 +1,5 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" role="img" aria-label="Volt">
+  <rect width="128" height="128" fill="#000"/>
+  <path d="M69 8 29 70h29l-5 50 46-70H69z" fill="none" stroke="#00a8ff" stroke-width="8" stroke-linejoin="miter"/>
+  <path d="M63 57h19L65 83l2-20H50L70 32z" fill="#fff"/>
+</svg>
