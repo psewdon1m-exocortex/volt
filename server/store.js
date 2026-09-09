@@ -1,5 +1,6 @@
 import { createHash, randomUUID } from "node:crypto";
-import { mkdirSync, readFileSync, unlinkSync } from "node:fs";
+import { mkdirSync, readFileSync, statfsSync, unlinkSync } from "node:fs";
+import { cpus, freemem, totalmem } from "node:os";
 import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
 
@@ -13,6 +14,34 @@ import { portableVaultInfo, rotatePortableAccessKey } from "./vault-file.js";
 
 function isoNow() {
   return new Date().toISOString();
+}
+
+const DEFAULT_ACCENT = "#00A8FF";
+const DEFAULT_NAVIGATION_ORDER = ["dashboard", "vault", "trash", "audit", "settings"];
+const DEFAULT_SETTINGS_ORDER = ["appearance", "security", "backup", "updates", "logs", "cryptography"];
+const DEFAULT_DASHBOARD_ORDER = ["cpu", "memory", "disk", "uptime", "entities"];
+export const DEFAULT_TRASH_RETENTION_DAYS = 30;
+export const MIN_TRASH_RETENTION_DAYS = 1;
+export const MAX_TRASH_RETENTION_DAYS = 365;
+const DAY_MS = 24 * 60 * 60 * 1000;
+
+function trashDeadline(deletedAt, retentionDays) {
+  return new Date(new Date(deletedAt).getTime() + retentionDays * DAY_MS).toISOString();
+}
+
+function validOrder(value, allowed) {
+  return Array.isArray(value)
+    && value.length === allowed.length
+    && new Set(value).size === allowed.length
+    && value.every((item) => allowed.includes(item));
+}
+
+function relativeLuminance(hex) {
+  const weights = [0.2126, 0.7152, 0.0722];
+  return [1, 3, 5]
+    .map((offset) => Number.parseInt(hex.slice(offset, offset + 2), 16) / 255)
+    .map((channel) => channel <= 0.04045 ? channel / 12.92 : ((channel + 0.055) / 1.055) ** 2.4)
+    .reduce((sum, channel, index) => sum + channel * weights[index], 0);
 }
 
 function domainError(status, code, message) {
@@ -47,9 +76,9 @@ function maskPayload(payload) {
 }
 
 export function parseVoltReference(reference) {
-  const match = /^(?:volt:\/\/|secret:\/\/volt\/)([0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12})\/([0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12})$/i.exec(String(reference));
-  if (!match) throw domainError(400, "INVALID_VOLT_REFERENCE", "Expected volt://<entry-id>/<field-id>");
-  return { entryId: match[1].toLowerCase(), fieldId: match[2].toLowerCase() };
+  const match = /^(?:volt:\/\/|secret:\/\/volt\/)([0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12})\/([1-5])$/i.exec(String(reference));
+  if (!match) throw domainError(400, "INVALID_VOLT_REFERENCE", "Expected volt://<entry-id>/<value-position>");
+  return { entryId: match[1].toLowerCase(), fieldPosition: Number(match[2]) };
 }
 
 export class VoltStore {
@@ -58,9 +87,12 @@ export class VoltStore {
     this.filename = filename;
     this.masterKey = masterKey;
     this.auditRetention = auditRetention;
+    this.lastCpuUsage = process.cpuUsage();
+    this.lastCpuAt = process.hrtime.bigint();
     this.db = new DatabaseSync(filename);
     this.db.exec("PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON; PRAGMA secure_delete=ON; PRAGMA synchronous=FULL; PRAGMA busy_timeout=5000;");
     this.#createSchema();
+    this.purgeExpiredEntries();
   }
 
   #createSchema() {
@@ -117,6 +149,12 @@ export class VoltStore {
     this.db.exec("DROP TABLE IF EXISTS grants; DROP TABLE IF EXISTS principals;");
     if (!this.getSetting("auth_generation")) this.setSetting("auth_generation", "1");
     if (!this.getSetting("appearance")) this.setSetting("appearance", "dark");
+    if (!this.getSetting("accent_color")) this.setSetting("accent_color", DEFAULT_ACCENT);
+    if (!this.getSetting("sidebar_mode")) this.setSetting("sidebar_mode", "fixed");
+    if (!this.getSetting("navigation_order")) this.setSetting("navigation_order", JSON.stringify(DEFAULT_NAVIGATION_ORDER));
+    if (!this.getSetting("settings_order")) this.setSetting("settings_order", JSON.stringify(DEFAULT_SETTINGS_ORDER));
+    if (!this.getSetting("dashboard_order")) this.setSetting("dashboard_order", JSON.stringify(DEFAULT_DASHBOARD_ORDER));
+    if (!this.getSetting("trash_retention_days")) this.setSetting("trash_retention_days", DEFAULT_TRASH_RETENTION_DAYS);
   }
 
   close() {
@@ -136,6 +174,26 @@ export class VoltStore {
       INSERT INTO settings(key, value) VALUES(?, ?)
       ON CONFLICT(key) DO UPDATE SET value = excluded.value
     `).run(key, String(value));
+  }
+
+  getTrashRetentionDays() {
+    const value = Number(this.getSetting("trash_retention_days"));
+    return Number.isInteger(value) && value >= MIN_TRASH_RETENTION_DAYS && value <= MAX_TRASH_RETENTION_DAYS
+      ? value
+      : DEFAULT_TRASH_RETENTION_DAYS;
+  }
+
+  setTrashRetentionDays(value, { actor = "operator" } = {}) {
+    const retentionDays = Number(value);
+    if (!Number.isInteger(retentionDays) || retentionDays < MIN_TRASH_RETENTION_DAYS || retentionDays > MAX_TRASH_RETENTION_DAYS) {
+      throw domainError(400, "TRASH_RETENTION_INVALID", `Trash retention must be an integer from ${MIN_TRASH_RETENTION_DAYS} to ${MAX_TRASH_RETENTION_DAYS} days`);
+    }
+    const previous = this.getTrashRetentionDays();
+    this.setSetting("trash_retention_days", retentionDays);
+    if (retentionDays !== previous) {
+      this.audit({ actor, action: "settings.trash_retention.update", details: { previous_days: previous, retention_days: retentionDays } });
+    }
+    return retentionDays;
   }
 
   getAuthGeneration() {
@@ -187,6 +245,108 @@ export class VoltStore {
     const appearance = value === "light" ? "light" : "dark";
     this.setSetting("appearance", appearance);
     return appearance;
+  }
+
+  getInterfaceSettings() {
+    const accent = String(this.getSetting("accent_color") ?? DEFAULT_ACCENT).toUpperCase();
+    const navigationOrder = parseJson(this.getSetting("navigation_order"), DEFAULT_NAVIGATION_ORDER);
+    const settingsOrder = parseJson(this.getSetting("settings_order"), DEFAULT_SETTINGS_ORDER);
+    const dashboardOrder = parseJson(this.getSetting("dashboard_order"), DEFAULT_DASHBOARD_ORDER);
+    return {
+      accent: /^#[0-9A-F]{6}$/.test(accent) ? accent : DEFAULT_ACCENT,
+      sidebar_mode: this.getSetting("sidebar_mode") === "auto" ? "auto" : "fixed",
+      navigation_order: validOrder(navigationOrder, DEFAULT_NAVIGATION_ORDER) ? navigationOrder : [...DEFAULT_NAVIGATION_ORDER],
+      settings_order: validOrder(settingsOrder, DEFAULT_SETTINGS_ORDER) ? settingsOrder : [...DEFAULT_SETTINGS_ORDER],
+      dashboard_order: validOrder(dashboardOrder, DEFAULT_DASHBOARD_ORDER) ? dashboardOrder : [...DEFAULT_DASHBOARD_ORDER],
+    };
+  }
+
+  setInterfaceSettings(update) {
+    const current = this.getInterfaceSettings();
+    const next = { ...current };
+    if (update.accent !== undefined) {
+      const accent = String(update.accent).toUpperCase();
+      if (!/^#[0-9A-F]{6}$/.test(accent)) {
+        throw domainError(400, "ACCENT_INVALID", "Accent color must use #RRGGBB format");
+      }
+      const contrast = (relativeLuminance(accent) + 0.05) / 0.05;
+      if (contrast < 4.5) {
+        throw domainError(400, "ACCENT_CONTRAST_LOW", "Accent color must have at least 4.5:1 contrast on black");
+      }
+      next.accent = accent;
+    }
+    if (update.sidebar_mode !== undefined) {
+      if (!["fixed", "auto"].includes(update.sidebar_mode)) {
+        throw domainError(400, "SIDEBAR_MODE_INVALID", "Sidebar mode must be fixed or auto");
+      }
+      next.sidebar_mode = update.sidebar_mode;
+    }
+    if (update.navigation_order !== undefined) {
+      if (!validOrder(update.navigation_order, DEFAULT_NAVIGATION_ORDER)) {
+        throw domainError(400, "NAVIGATION_ORDER_INVALID", "Navigation order must contain every primary destination exactly once");
+      }
+      next.navigation_order = [...update.navigation_order];
+    }
+    if (update.settings_order !== undefined) {
+      if (!validOrder(update.settings_order, DEFAULT_SETTINGS_ORDER)) {
+        throw domainError(400, "SETTINGS_ORDER_INVALID", "Settings order must contain every section exactly once");
+      }
+      next.settings_order = [...update.settings_order];
+    }
+    if (update.dashboard_order !== undefined) {
+      if (!validOrder(update.dashboard_order, DEFAULT_DASHBOARD_ORDER)) {
+        throw domainError(400, "DASHBOARD_ORDER_INVALID", "Dashboard order must contain every health card exactly once");
+      }
+      next.dashboard_order = [...update.dashboard_order];
+    }
+
+    this.db.exec("BEGIN IMMEDIATE");
+    try {
+      this.setSetting("accent_color", next.accent);
+      this.setSetting("sidebar_mode", next.sidebar_mode);
+      this.setSetting("navigation_order", JSON.stringify(next.navigation_order));
+      this.setSetting("settings_order", JSON.stringify(next.settings_order));
+      this.setSetting("dashboard_order", JSON.stringify(next.dashboard_order));
+      this.setSetting("appearance", "dark");
+      this.db.exec("COMMIT");
+    } catch (error) {
+      this.db.exec("ROLLBACK");
+      throw error;
+    }
+    return next;
+  }
+
+  getDashboardStats() {
+    const now = process.hrtime.bigint();
+    const usage = process.cpuUsage();
+    const elapsedMicros = Number(now - this.lastCpuAt) / 1_000;
+    const usedMicros = usage.user + usage.system - this.lastCpuUsage.user - this.lastCpuUsage.system;
+    const logicalCores = Math.max(cpus().length, 1);
+    this.lastCpuAt = now;
+    this.lastCpuUsage = usage;
+    const cpuPercent = elapsedMicros > 250_000
+      ? Math.min(100, Math.max(0, usedMicros / elapsedMicros / logicalCores * 100))
+      : null;
+
+    const memoryTotal = totalmem();
+    const memoryUsed = Math.max(0, memoryTotal - freemem());
+    let disk = null;
+    try {
+      const value = statfsSync(path.dirname(this.filename));
+      const total = Number(value.blocks) * Number(value.bsize);
+      const available = Number(value.bavail) * Number(value.bsize);
+      const used = Math.max(0, total - available);
+      disk = { used_bytes: used, total_bytes: total, percent: total ? used / total * 100 : null };
+    } catch {}
+
+    return {
+      measured_at: isoNow(),
+      entries: Number(this.db.prepare("SELECT COUNT(*) AS count FROM entries WHERE deleted_at IS NULL").get().count),
+      cpu: { percent: cpuPercent, logical_cores: logicalCores },
+      memory: { used_bytes: memoryUsed, total_bytes: memoryTotal, percent: memoryTotal ? memoryUsed / memoryTotal * 100 : null },
+      disk,
+      uptime_seconds: Math.floor(process.uptime()),
+    };
   }
 
   audit({ actor, action, target = null, status = "success", details = null }) {
@@ -338,6 +498,24 @@ export class VoltStore {
     }));
   }
 
+  listDeletedEntries() {
+    const retentionDays = this.getTrashRetentionDays();
+    const rows = this.db.prepare(`
+      SELECT e.*, r.revision_number, r.ciphertext, r.nonce, r.tag
+      FROM entries e JOIN entry_revisions r ON r.id = e.current_revision_id
+      WHERE e.deleted_at IS NOT NULL ORDER BY e.deleted_at DESC
+    `).all();
+    return rows.map((row) => ({
+      id: row.id,
+      ...maskPayload(this.#decryptRow(row)),
+      revision: Number(row.revision_number),
+      created_at: row.created_at,
+      updated_at: row.updated_at,
+      deleted_at: row.deleted_at,
+      purge_at: trashDeadline(row.deleted_at, retentionDays),
+    }));
+  }
+
   getEntry(entryId) {
     const row = this.#entryRow(entryId);
     return {
@@ -453,12 +631,60 @@ export class VoltStore {
     this.audit({ actor, action: "entry.delete", target: entryId, details: { revision: Number(row.revision_number) } });
   }
 
+  restoreDeletedEntry(entryId, { actor = "operator" } = {}) {
+    const row = this.#entryRow(entryId, true);
+    if (!row.deleted_at) throw domainError(409, "ENTRY_NOT_DELETED", "Entry is not in trash");
+    const restoredAt = isoNow();
+    const position = Number(this.db.prepare(
+      "SELECT COALESCE(MAX(position), -1) + 1 AS next FROM entries WHERE deleted_at IS NULL",
+    ).get().next);
+    this.db.prepare("UPDATE entries SET deleted_at = NULL, updated_at = ?, position = ? WHERE id = ?")
+      .run(restoredAt, position, entryId);
+    this.audit({ actor, action: "entry.restore_from_trash", target: entryId, details: { deleted_at: row.deleted_at } });
+    return this.getEntry(entryId);
+  }
+
   purgeEntry(entryId, { actor = "operator" } = {}) {
     const row = this.#entryRow(entryId, true);
     if (!row.deleted_at) throw domainError(409, "ENTRY_NOT_DELETED", "Delete the entry before purging it");
-    this.db.prepare("DELETE FROM entries WHERE id = ?").run(entryId);
+    this.db.exec("BEGIN IMMEDIATE");
+    try {
+      this.db.prepare("DELETE FROM entries WHERE id = ?").run(entryId);
+      this.audit({ actor, action: "entry.purge", target: entryId, details: { crypto_erasure: true } });
+      this.db.exec("COMMIT");
+    } catch (error) {
+      this.db.exec("ROLLBACK");
+      throw error;
+    }
     this.db.exec("PRAGMA wal_checkpoint(TRUNCATE)");
-    this.audit({ actor, action: "entry.purge", target: entryId, details: { crypto_erasure: true } });
+  }
+
+  purgeExpiredEntries({ actor = "system:retention", now = isoNow() } = {}) {
+    const retentionDays = this.getTrashRetentionDays();
+    const cutoff = new Date(new Date(now).getTime() - retentionDays * DAY_MS).toISOString();
+    const rows = this.db.prepare(
+      "SELECT id, deleted_at FROM entries WHERE deleted_at IS NOT NULL AND deleted_at <= ? ORDER BY deleted_at",
+    ).all(cutoff);
+    if (!rows.length) return 0;
+    this.db.exec("BEGIN IMMEDIATE");
+    try {
+      const remove = this.db.prepare("DELETE FROM entries WHERE id = ?");
+      for (const row of rows) {
+        remove.run(row.id);
+        this.audit({
+          actor,
+          action: "entry.purge",
+          target: row.id,
+          details: { crypto_erasure: true, reason: "trash_retention_expired", deleted_at: row.deleted_at },
+        });
+      }
+      this.db.exec("COMMIT");
+    } catch (error) {
+      this.db.exec("ROLLBACK");
+      throw error;
+    }
+    this.db.exec("PRAGMA wal_checkpoint(TRUNCATE)");
+    return rows.length;
   }
 
   reorderEntries(ids, { actor = "operator" } = {}) {
@@ -483,12 +709,12 @@ export class VoltStore {
     if (!unique.length || unique.length > 20) throw domainError(400, "INVALID_REFERENCE_BATCH", "Resolve between 1 and 20 references at a time");
     const resolved = [];
     for (const reference of unique) {
-      const { entryId, fieldId } = parseVoltReference(reference);
+      const { entryId, fieldPosition } = parseVoltReference(reference);
       const row = this.#entryRow(entryId);
       const payload = this.#decryptRow(row);
-      const field = payload.fields.find((candidate) => candidate.id === fieldId);
-      if (!field) throw domainError(404, "FIELD_NOT_FOUND", `Field no longer exists for ${reference}`);
-      resolved.push({ reference, entryId, fieldId, revision: Number(row.revision_number), value: field.value, visibility: field.visibility });
+      const field = payload.fields[fieldPosition - 1];
+      if (!field) throw domainError(404, "FIELD_NOT_FOUND", `Value position no longer exists for ${reference}`);
+      resolved.push({ reference, entryId, fieldPosition, revision: Number(row.revision_number), value: field.value, visibility: field.visibility });
     }
     const resolutionRevision = createHash("sha256")
       .update(resolved.map(({ reference, revision }) => `${reference}@${revision}`).sort().join("\n"))
@@ -497,7 +723,7 @@ export class VoltStore {
       this.audit({
         actor,
         action: "secret.resolve",
-        target: `${item.entryId}/${item.fieldId}`,
+        target: `${item.entryId}/${item.fieldPosition}`,
         details: { revision: item.revision },
       });
     }
@@ -519,7 +745,7 @@ export class VoltStore {
     const tables = {
       settings: this.db.prepare(`
         SELECT key, value FROM settings
-        WHERE key NOT IN ('access_key_hash', 'auth_generation')
+        WHERE key NOT IN ('access_key_hash', 'auth_generation', 'kernel_token_hash')
         ORDER BY key
       `).all(),
       entries: this.db.prepare(`
@@ -541,6 +767,7 @@ export class VoltStore {
 
   importLogicalState(state, { actor = "operator", archiveDigest = null } = {}) {
     const preservedAccessKeyHash = this.getSetting("access_key_hash");
+    const preservedKernelTokenHash = this.getSetting("kernel_token_hash");
     const nextAuthGeneration = this.getAuthGeneration() + 1;
     const entryById = new Map(state.entries.map((entry) => [entry.id, entry]));
     const revisionById = new Map(state.revisions.map((revision) => [revision.id, revision]));
@@ -577,9 +804,10 @@ export class VoltStore {
       `);
       const settings = this.db.prepare("INSERT INTO settings(key, value) VALUES(?, ?)");
       for (const row of state.settings) {
-        if (row.key !== "access_key_hash" && row.key !== "auth_generation") settings.run(row.key, row.value);
+        if (row.key !== "access_key_hash" && row.key !== "auth_generation" && row.key !== "kernel_token_hash") settings.run(row.key, row.value);
       }
       if (preservedAccessKeyHash) settings.run("access_key_hash", preservedAccessKeyHash);
+      if (preservedKernelTokenHash) settings.run("kernel_token_hash", preservedKernelTokenHash);
       settings.run("auth_generation", String(nextAuthGeneration));
       const entries = this.db.prepare(`
         INSERT INTO entries(id, current_revision_id, position, wrapped_key, key_nonce, key_tag, created_at, updated_at, deleted_at)

@@ -7,6 +7,7 @@ import test from "node:test";
 
 import { parseVoltReference, VoltStore } from "../server/store.js";
 import { buildBackupArchive, parseBackupArchive } from "../server/backup.js";
+import { normalizeEntryPayload } from "../server/validation.js";
 
 function withStore(run) {
   const directory = mkdtempSync(path.join(os.tmpdir(), "volt-test-"));
@@ -61,17 +62,90 @@ test("updates append immutable revisions and restore creates another revision", 
   assert.deepEqual(store.getRevisions(created.id).map((revision) => revision.revision), [3, 2, 1]);
 }));
 
+test("trash keeps encrypted revisions recoverable for 30 days and supports permanent deletion", () => withStore((store) => {
+  const entry = store.createEntry(entryPayload("trash-secret"));
+  store.deleteEntry(entry.id);
+  assert.throws(() => store.getEntry(entry.id), { code: "ENTRY_NOT_FOUND" });
+  const trashed = store.listDeletedEntries();
+  assert.equal(trashed.length, 1);
+  assert.equal(trashed[0].id, entry.id);
+  assert.equal(trashed[0].fields[1].value, null);
+  assert.equal(new Date(trashed[0].purge_at).getTime() - new Date(trashed[0].deleted_at).getTime(), 30 * 24 * 60 * 60 * 1000);
+  assert.equal(JSON.stringify(trashed).includes("trash-secret"), false);
+
+  const restored = store.restoreDeletedEntry(entry.id);
+  assert.equal(restored.id, entry.id);
+  assert.equal(store.revealField(entry.id, entry.fields[1].id).value, "trash-secret");
+
+  store.deleteEntry(entry.id);
+  store.purgeEntry(entry.id);
+  assert.equal(store.listDeletedEntries().length, 0);
+  assert.throws(() => store.getRevision(entry.id, 1), { code: "ENTRY_NOT_FOUND" });
+
+  const expired = store.createEntry(entryPayload("expired-secret"));
+  store.deleteEntry(expired.id);
+  assert.equal(store.purgeExpiredEntries({ now: new Date(Date.now() + 31 * 24 * 60 * 60 * 1000).toISOString() }), 1);
+  assert.equal(store.listDeletedEntries().length, 0);
+  assert.equal(store.listAudit().some((event) => event.action === "entry.purge" && event.target === expired.id), true);
+}));
+
+test("trash retention is configurable in days and applies to existing deleted entries", () => withStore((store) => {
+  assert.equal(store.getTrashRetentionDays(), 30);
+  const entry = store.createEntry(entryPayload("retained-secret"));
+  store.deleteEntry(entry.id);
+  assert.equal(store.setTrashRetentionDays(45), 45);
+  const trashed = store.listDeletedEntries()[0];
+  assert.equal(new Date(trashed.purge_at).getTime() - new Date(trashed.deleted_at).getTime(), 45 * 24 * 60 * 60 * 1000);
+  assert.equal(store.purgeExpiredEntries({ now: new Date(Date.now() + 31 * 24 * 60 * 60 * 1000).toISOString() }), 0);
+  assert.equal(store.purgeExpiredEntries({ now: new Date(Date.now() + 46 * 24 * 60 * 60 * 1000).toISOString() }), 1);
+  assert.throws(() => store.setTrashRetentionDays(0), { code: "TRASH_RETENTION_INVALID" });
+  assert.throws(() => store.setTrashRetentionDays(366), { code: "TRASH_RETENTION_INVALID" });
+  assert.throws(() => store.setTrashRetentionDays(1.5), { code: "TRASH_RETENTION_INVALID" });
+}));
+
 test("Kernel resolution decrypts exact references without storing plaintext", () => withStore((store) => {
   const entry = store.createEntry(entryPayload("machine-secret"));
-  const plainRef = `volt://${entry.id}/${entry.fields[0].id}`;
-  const secretRef = `volt://${entry.id}/${entry.fields[1].id}`;
+  const plainRef = `volt://${entry.id}/1`;
+  const secretRef = `volt://${entry.id}/2`;
   const parsed = parseVoltReference(secretRef);
   assert.equal(parsed.entryId, entry.id);
+  assert.equal(parsed.fieldPosition, 2);
   const result = store.resolveReferences([plainRef, secretRef]);
   assert.deepEqual(result.values[plainRef], { value: "hello@example.test", revision: 1, visibility: "plain" });
   assert.deepEqual(result.values[secretRef], { value: "machine-secret", revision: 1, visibility: "secret" });
   assert.equal(JSON.stringify(store.listAudit()).includes("machine-secret"), false);
 }));
+
+test("numeric references follow the current 1-based value order", () => withStore((store) => {
+  const entry = store.createEntry(entryPayload("machine-secret"));
+  const firstRef = `volt://${entry.id}/1`;
+  const reordered = entryPayload("machine-secret");
+  reordered.fields = [
+    { id: entry.fields[1].id, key: "password", value: "machine-secret", visibility: "secret", generator: null },
+    { id: entry.fields[0].id, key: "email", value: "hello@example.test", visibility: "plain", generator: null },
+  ];
+  store.updateEntry(entry.id, reordered, { expectedRevision: 1 });
+  assert.deepEqual(store.resolveReferences([firstRef]).values[firstRef], {
+    value: "machine-secret",
+    revision: 2,
+    visibility: "secret",
+  });
+  assert.throws(() => parseVoltReference(`volt://${entry.id}/0`), { code: "INVALID_VOLT_REFERENCE" });
+  assert.throws(() => parseVoltReference(`volt://${entry.id}/${entry.fields[0].id}`), { code: "INVALID_VOLT_REFERENCE" });
+}));
+
+test("value names no longer need to be unique within an entry", () => {
+  const normalized = normalizeEntryPayload({
+    title: "Duplicate labels",
+    fields: [
+      { key: "value", value: "first", visibility: "plain" },
+      { key: "value", value: "second", visibility: "secret" },
+    ],
+  });
+  assert.equal(normalized.fields[0].key, "value");
+  assert.equal(normalized.fields[1].key, "value");
+  assert.notEqual(normalized.fields[0].id, normalized.fields[1].id);
+});
 
 test("optimistic concurrency rejects stale edits", () => withStore((store) => {
   const created = store.createEntry(entryPayload("v1"));
@@ -83,6 +157,7 @@ test("optimistic concurrency rejects stale edits", () => withStore((store) => {
 
 test("logical backup round-trips ciphertext and history without machine credentials", () => withStore((source) => {
   source.setSetting("access_key_hash", "source-access-verifier");
+  source.setSetting("kernel_token_hash", "a".repeat(64));
   const entry = source.createEntry(entryPayload("backup-secret"));
   const next = entryPayload("backup-secret-v2");
   next.fields = next.fields.map((field, index) => ({ ...field, id: entry.fields[index].id }));
@@ -91,13 +166,16 @@ test("logical backup round-trips ciphertext and history without machine credenti
   const archive = buildBackupArchive(source.exportLogicalState());
   const parsed = parseBackupArchive(Buffer.from(archive));
   assert.equal(parsed.state.settings.some((row) => row.key === "access_key_hash"), false);
+  assert.equal(parsed.state.settings.some((row) => row.key === "kernel_token_hash"), false);
 
   const directory = mkdtempSync(path.join(os.tmpdir(), "volt-restore-test-"));
   const restored = new VoltStore({ filename: path.join(directory, "restored.sqlite"), masterKey });
   try {
     restored.setSetting("access_key_hash", "destination-access-verifier");
+    restored.setSetting("kernel_token_hash", "b".repeat(64));
     restored.importLogicalState(parsed.state, { archiveDigest: parsed.digest });
     assert.equal(restored.getSetting("access_key_hash"), "destination-access-verifier");
+    assert.equal(restored.getSetting("kernel_token_hash"), "b".repeat(64));
     assert.equal(restored.getEntry(entry.id).revision, 2);
     assert.equal(restored.revealField(entry.id, entry.fields[1].id, { revisionNumber: 1 }).value, "backup-secret");
     assert.equal(Object.hasOwn(parsed.state, "principals"), false);
@@ -106,4 +184,24 @@ test("logical backup round-trips ciphertext and history without machine credenti
     restored.close();
     rmSync(directory, { recursive: true, force: true });
   }
+}));
+
+test("interface settings persist validated orders and reject low-contrast accents", () => withStore((store) => {
+  assert.deepEqual(store.getInterfaceSettings(), {
+    accent: "#00A8FF",
+    sidebar_mode: "fixed",
+    navigation_order: ["dashboard", "vault", "trash", "audit", "settings"],
+    settings_order: ["appearance", "security", "backup", "updates", "logs", "cryptography"],
+    dashboard_order: ["cpu", "memory", "disk", "uptime", "entities"],
+  });
+  const changed = store.setInterfaceSettings({
+    accent: "#62ff8c",
+    sidebar_mode: "auto",
+    dashboard_order: ["uptime", "cpu", "memory", "disk", "entities"],
+  });
+  assert.equal(changed.accent, "#62FF8C");
+  assert.equal(changed.sidebar_mode, "auto");
+  assert.deepEqual(store.getInterfaceSettings().dashboard_order, ["uptime", "cpu", "memory", "disk", "entities"]);
+  assert.throws(() => store.setInterfaceSettings({ accent: "#111111" }), { code: "ACCENT_CONTRAST_LOW" });
+  assert.throws(() => store.setInterfaceSettings({ navigation_order: ["dashboard", "vault"] }), { code: "NAVIGATION_ORDER_INVALID" });
 }));

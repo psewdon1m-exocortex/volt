@@ -6,8 +6,14 @@ export default defineConfig({
   server: {
     port: 18185,
     proxy: {
-      "/api": "http://127.0.0.1:18184",
-      "/robots.txt": "http://127.0.0.1:18184",
+      "/api": {
+        target: "http://127.0.0.1:18184",
+        changeOrigin: false,
+      },
+      "/robots.txt": {
+        target: "http://127.0.0.1:18184",
+        changeOrigin: false,
+      },
     },
   },
   build: {

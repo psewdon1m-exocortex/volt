@@ -33,16 +33,12 @@ export function normalizeEntryPayload(body) {
   if (!Array.isArray(body.fields) || body.fields.length < 1 || body.fields.length > 5) {
     throw domainError(400, "INVALID_ENTRY", "Entry must contain between 1 and 5 fields");
   }
-  const keys = new Set();
   const ids = new Set();
   const fields = body.fields.map((field, index) => {
     if (!field || typeof field !== "object" || Array.isArray(field)) {
       throw domainError(400, "INVALID_ENTRY", `Field ${index + 1} must be an object`);
     }
     const key = requiredText(field.key, `Field ${index + 1} name`, 64);
-    const normalizedKey = key.toLocaleLowerCase("en-US");
-    if (keys.has(normalizedKey)) throw domainError(400, "INVALID_ENTRY", "Field names must be unique within an entry");
-    keys.add(normalizedKey);
     const id = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(String(field.id ?? "")) ? String(field.id).toLowerCase() : randomUUID();
     if (ids.has(id)) throw domainError(400, "INVALID_ENTRY", "Field identifiers must be unique");
     ids.add(id);

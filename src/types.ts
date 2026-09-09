@@ -20,6 +20,11 @@ export interface Entry {
   updated_at: string;
 }
 
+export interface TrashEntry extends Entry {
+  deleted_at: string;
+  purge_at: string;
+}
+
 export interface Revision {
   id: string;
   revision: number;

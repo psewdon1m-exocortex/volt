@@ -4,6 +4,7 @@ import { createHash, createHmac, randomUUID, timingSafeEqual } from "node:crypto
 
 import cookieParser from "cookie-parser";
 import express from "express";
+import { strToU8, zipSync } from "fflate";
 import multer from "multer";
 
 import { buildBackupArchive, MAX_COMPRESSED_BYTES, parseBackupArchive } from "./backup.js";
@@ -14,7 +15,7 @@ import {
   verifyAccessKey,
   verifySessionToken,
 } from "./security.js";
-import { domainError } from "./store.js";
+import { domainError, MAX_TRASH_RETENTION_DAYS, MIN_TRASH_RETENTION_DAYS } from "./store.js";
 import { normalizeEntryPayload, normalizeReason } from "./validation.js";
 
 const COOKIE_NAME = "volt_session";
@@ -32,12 +33,66 @@ function bearerToken(request) {
   return match?.[1] ?? null;
 }
 
-export function createApp({ store, sessionKey, accessKey, kernelToken, secureCookies = false, trustProxy = false, distDir = null, neptuneClient = null, updaterClient = null, neptuneExportTokenFile = null }) {
+function validKernelToken(value) {
+  return typeof value === "string"
+    && value.length >= 32
+    && value.length <= 512
+    && !/(?:replace-with|change-this|example-token)/i.test(value);
+}
+
+function kernelTokenHash(value) {
+  return createHash("sha256").update(value).digest("hex");
+}
+
+function normalizeKernelUrl(value) {
+  try {
+    const url = new URL(String(value));
+    if (!["http:", "https:"].includes(url.protocol) || url.username || url.password || url.search || url.hash) return null;
+    if (url.pathname !== "/") return null;
+    return url.origin;
+  } catch {
+    return null;
+  }
+}
+
+async function probeKernel(url) {
+  try {
+    const response = await fetch(`${url}/api/v1/health`, {
+      headers: { Accept: "application/json" },
+      signal: AbortSignal.timeout(2_500),
+    });
+    const body = await response.json().catch(() => ({}));
+    const reachable = response.ok && body?.status === "ok";
+    return {
+      reachable,
+      identity: reachable ? String(body.service ?? body.schema ?? "kernel") : null,
+      checked_at: new Date().toISOString(),
+      error: reachable ? null : `Kernel returned HTTP ${response.status}`,
+    };
+  } catch (error) {
+    return {
+      reachable: false,
+      identity: null,
+      checked_at: new Date().toISOString(),
+      error: error instanceof Error ? error.message : "Kernel is unavailable",
+    };
+  }
+}
+
+export function createApp({ store, sessionKey, accessKey, kernelToken, kernelUrlSeed = "http://127.0.0.1:18180", appVersion = "0.1.0", secureCookies = false, trustProxy = false, distDir = null, neptuneClient = null, updaterClient = null, neptuneExportTokenFile = null }) {
   const app = express();
   app.disable("x-powered-by");
   if (trustProxy) app.set("trust proxy", trustProxy);
 
   if (!store.getSetting("access_key_hash")) store.setSetting("access_key_hash", hashAccessKey(accessKey));
+  if (!store.getSetting("kernel_token_hash") && validKernelToken(kernelToken)) {
+    store.setSetting("kernel_token_hash", kernelTokenHash(kernelToken));
+    store.audit({ actor: "system:migration", action: "kernel_access.configure" });
+  }
+  if (!store.getSetting("kernel_url")) {
+    const kernelUrl = normalizeKernelUrl(kernelUrlSeed);
+    if (kernelUrl) store.setSetting("kernel_url", kernelUrl);
+  }
 
   const loginAttempts = new Map();
   const networkActor = (address) => `network:${createHmac("sha256", sessionKey).update(String(address)).digest("hex").slice(0, 20)}`;
@@ -101,9 +156,12 @@ export function createApp({ store, sessionKey, accessKey, kernelToken, secureCoo
 
   function requireKernel(request, _response, next) {
     const supplied = bearerToken(request) ?? "";
+    const configuredHash = store.getSetting("kernel_token_hash") ?? "";
     const suppliedHash = createHash("sha256").update(supplied).digest();
-    const expectedHash = createHash("sha256").update(kernelToken ?? "").digest();
-    if (!kernelToken || !supplied || !timingSafeEqual(suppliedHash, expectedHash)) {
+    const expectedHash = /^[a-f0-9]{64}$/i.test(configuredHash)
+      ? Buffer.from(configuredHash, "hex")
+      : Buffer.alloc(0);
+    if (!supplied || expectedHash.length !== suppliedHash.length || !timingSafeEqual(suppliedHash, expectedHash)) {
       return next(domainError(401, "KERNEL_UNAUTHORIZED", "A valid Kernel token is required"));
     }
     next();
@@ -136,7 +194,7 @@ export function createApp({ store, sessionKey, accessKey, kernelToken, secureCoo
         maxAge: 12 * 60 * 60 * 1000,
       });
       store.audit({ actor: "operator", action: "session.unlock" });
-      response.json({ authenticated: true, appearance: store.getAppearance() });
+      response.json({ authenticated: true, appearance: "dark", interface: store.getInterfaceSettings() });
     } catch (error) {
       next(error);
     }
@@ -148,7 +206,7 @@ export function createApp({ store, sessionKey, accessKey, kernelToken, secureCoo
       sessionKey,
       store.getAuthGeneration(),
     ));
-    response.json({ authenticated, appearance: store.getAppearance() });
+    response.json({ authenticated, appearance: "dark", interface: store.getInterfaceSettings() });
   });
 
   app.delete("/api/v1/session", requireSameOrigin, (request, response) => {
@@ -173,6 +231,27 @@ export function createApp({ store, sessionKey, accessKey, kernelToken, secureCoo
     } catch (error) { next(error); }
   });
 
+  app.post("/api/v1/internal/neptune/mirror", (request, response, next) => {
+    try {
+      if (!neptuneExportTokenFile) throw domainError(503, "NEPTUNE_NOT_CONFIGURED", "Neptune export token is not configured");
+      let expected;
+      try { expected = readFileSync(neptuneExportTokenFile, "utf8").trim(); }
+      catch { throw domainError(503, "NEPTUNE_NOT_CONFIGURED", "Neptune export token is unavailable"); }
+      const supplied = bearerToken(request) ?? "";
+      const authorized = supplied.length === expected.length && supplied.length > 0 && timingSafeEqual(Buffer.from(supplied), Buffer.from(expected));
+      if (!authorized) throw domainError(401, "NEPTUNE_UNAUTHORIZED", "Invalid Neptune export token");
+      const snapshot = store.createPortableSnapshot();
+      store.audit({ actor: "service:neptune", action: "mirror.export", target: "personal.volt" });
+      response.set({
+        "Content-Type": "application/octet-stream",
+        "Content-Length": String(snapshot.byteLength),
+        "Content-Disposition": 'attachment; filename="personal.volt"',
+        "Cache-Control": "no-store",
+      });
+      response.send(Buffer.from(snapshot));
+    } catch (error) { next(error); }
+  });
+
   app.post("/api/v1/internal/kernel/resolve", requireKernel, (request, response, next) => {
     try {
       if (!Array.isArray(request.body?.references) || request.body.references.some((value) => typeof value !== "string")) {
@@ -193,10 +272,22 @@ export function createApp({ store, sessionKey, accessKey, kernelToken, secureCoo
   app.use("/api/v1", requireOperator);
 
   app.get("/api/v1/overview", (_request, response) => {
-    response.json({ ...store.getStats(), appearance: store.getAppearance() });
+    response.json({ ...store.getStats(), appearance: "dark", interface: store.getInterfaceSettings() });
   });
 
+  app.get("/api/v1/dashboard", (_request, response) => response.json(store.getDashboardStats()));
+
   app.get("/api/v1/entries", (_request, response) => response.json({ entries: store.listEntries() }));
+  app.get("/api/v1/trash", (_request, response) => response.json({
+    entries: store.listDeletedEntries(),
+    retention_days: store.getTrashRetentionDays(),
+  }));
+  app.post("/api/v1/trash/:entryId/restore", requireSameOrigin, (request, response, next) => {
+    try { response.json(store.restoreDeletedEntry(request.params.entryId)); } catch (error) { next(error); }
+  });
+  app.delete("/api/v1/trash/:entryId", requireSameOrigin, (request, response, next) => {
+    try { store.purgeEntry(request.params.entryId); response.status(204).end(); } catch (error) { next(error); }
+  });
   app.post("/api/v1/entries", requireSameOrigin, (request, response, next) => {
     try {
       response.status(201).json(store.createEntry(normalizeEntryPayload(request.body)));
@@ -246,16 +337,79 @@ export function createApp({ store, sessionKey, accessKey, kernelToken, secureCoo
   });
 
   app.post("/api/v1/generate", requireSameOrigin, async (request, response, next) => {
-    try { response.json(generateValue(request.body)); } catch (error) { next(error); }
+    try { response.json(await generateValue(request.body)); } catch (error) { next(error); }
   });
 
   app.get("/api/v1/audit", (request, response) => response.json({ events: store.listAudit(request.query.limit) }));
+  app.get("/api/v1/logs/archive", (_request, response, next) => {
+    try {
+      store.audit({ actor: "operator", action: "logs.export" });
+      const events = store.listAudit(500).reverse();
+      const jsonl = `${events.map((event) => JSON.stringify(event)).join("\n")}\n`;
+      const archive = Buffer.from(zipSync({
+        "volt-audit.jsonl": strToU8(jsonl),
+        "README.txt": strToU8("Redacted Volt operator and machine audit events. Secret values are never included.\n"),
+      }, { level: 9 }));
+      response.set({
+        "Content-Type": "application/zip",
+        "Content-Disposition": `attachment; filename="volt-logs-${new Date().toISOString().replaceAll(":", "-").replace(/\.\d{3}Z$/, "Z")}.zip"`,
+        "Content-Length": String(archive.byteLength),
+      });
+      response.send(archive);
+    } catch (error) { next(error); }
+  });
+  app.get("/api/v1/update/status", async (_request, response) => {
+    let updater = { reachable: false, version: null, error: "Local Updater is not configured" };
+    if (updaterClient) {
+      try {
+        const status = await updaterClient.status();
+        updater = { reachable: true, version: status.version ?? null, error: null };
+      } catch (error) {
+        updater = { reachable: false, version: null, error: error instanceof Error ? error.message : "Local Updater is unavailable" };
+      }
+    }
+    response.json({
+      installed_version: appVersion,
+      mechanism: "Local Updater / Kernel approved release registry",
+      updater,
+    });
+  });
+  app.get("/api/v1/settings/interface", (_request, response) => response.json(store.getInterfaceSettings()));
+  app.put("/api/v1/settings/interface", requireSameOrigin, (request, response, next) => {
+    try {
+      const settings = store.setInterfaceSettings(request.body ?? {});
+      store.audit({ actor: "operator", action: "interface.change", details: { fields: Object.keys(request.body ?? {}).sort() } });
+      response.json(settings);
+    } catch (error) { next(error); }
+  });
+  app.get("/api/v1/settings/trash", (_request, response) => response.json({
+    retention_days: store.getTrashRetentionDays(),
+    min_days: MIN_TRASH_RETENTION_DAYS,
+    max_days: MAX_TRASH_RETENTION_DAYS,
+  }));
+  app.put("/api/v1/settings/trash", requireSameOrigin, (request, response, next) => {
+    try {
+      const retentionDays = store.setTrashRetentionDays(request.body?.retention_days);
+      const purgedEntries = store.purgeExpiredEntries({ actor: "operator" });
+      response.json({
+        retention_days: retentionDays,
+        min_days: MIN_TRASH_RETENTION_DAYS,
+        max_days: MAX_TRASH_RETENTION_DAYS,
+        purged_entries: purgedEntries,
+      });
+    } catch (error) { next(error); }
+  });
   app.put("/api/v1/settings/appearance", requireSameOrigin, (request, response) => {
-    response.json({ appearance: store.setAppearance(request.body?.appearance) });
+    store.setAppearance("dark");
+    response.json({ appearance: "dark", interface: store.getInterfaceSettings() });
   });
   app.put("/api/v1/settings/access-key", requireSameOrigin, (request, response, next) => {
     try {
-      const accessKey = request.body?.access_key;
+      const currentAccessKey = request.body?.current_access_key;
+      const accessKey = request.body?.new_access_key;
+      if (!verifyAccessKey(String(currentAccessKey ?? ""), store.getSetting("access_key_hash"))) {
+        throw domainError(403, "CURRENT_ACCESS_KEY_INVALID", "Current Access Key is incorrect");
+      }
       if (typeof accessKey !== "string" || accessKey.length < 12 || accessKey.length > 512) {
         throw domainError(400, "WEAK_ACCESS_KEY", "Access Key must contain between 12 and 512 characters");
       }
@@ -264,6 +418,43 @@ export function createApp({ store, sessionKey, accessKey, kernelToken, secureCoo
       store.audit({ actor: "operator", action: "access_key.change" });
       response.status(204).end();
     } catch (error) { next(error); }
+  });
+
+  app.get("/api/v1/settings/kernel-access", async (_request, response) => {
+    const url = store.getSetting("kernel_url") ?? "http://127.0.0.1:18180";
+    response.json({
+      configured: Boolean(store.getSetting("kernel_token_hash")),
+      url,
+      ...(await probeKernel(url)),
+    });
+  });
+  app.put("/api/v1/settings/kernel-access", requireSameOrigin, (request, response, next) => {
+    Promise.resolve().then(async () => {
+      const token = request.body?.token;
+      const requestedUrl = request.body?.url;
+      if (token !== undefined && !validKernelToken(token)) {
+        throw domainError(400, "INVALID_KERNEL_TOKEN", "Kernel token must contain between 32 and 512 non-placeholder characters");
+      }
+      let url = store.getSetting("kernel_url") ?? "http://127.0.0.1:18180";
+      if (requestedUrl !== undefined) {
+        const normalized = normalizeKernelUrl(requestedUrl);
+        if (!normalized) throw domainError(400, "KERNEL_URL_INVALID", "Kernel URL must be an HTTP(S) authority without credentials, path, query or fragment");
+        const status = await probeKernel(normalized);
+        if (!status.reachable) throw domainError(409, "KERNEL_UNREACHABLE", "The new Kernel URL did not return a healthy Kernel response");
+        url = normalized;
+      }
+      if (requestedUrl === undefined && token === undefined) {
+        throw domainError(400, "KERNEL_SETTINGS_EMPTY", "Provide a Kernel URL or replacement token");
+      }
+      if (requestedUrl !== undefined) store.setSetting("kernel_url", url);
+      if (token !== undefined) store.setSetting("kernel_token_hash", kernelTokenHash(token));
+      store.audit({ actor: "operator", action: token !== undefined ? "kernel_access.rotate" : "kernel_url.change" });
+      response.json({
+        configured: Boolean(store.getSetting("kernel_token_hash")),
+        url,
+        ...(await probeKernel(url)),
+      });
+    }).catch(next);
   });
 
   app.get("/api/v1/neptune/status", async (_request, response, next) => {

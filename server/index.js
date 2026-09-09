@@ -12,6 +12,7 @@ import { createPortableVault, migrateLegacyVault, unlockPortableVault } from "./
 
 const currentDir = path.dirname(fileURLToPath(import.meta.url));
 const rootDir = path.resolve(currentDir, "..");
+const appVersion = JSON.parse(fs.readFileSync(path.join(rootDir, "package.json"), "utf8")).version;
 const dataDir = path.resolve(process.env.VOLT_DATA_DIR || path.join(rootDir, "data"));
 const vaultFilename = path.resolve(process.env.VOLT_VAULT_FILE || path.join(dataDir, "personal.volt"));
 const legacyFilename = path.resolve(process.env.VOLT_LEGACY_DATABASE_FILE || path.join(dataDir, "volt.sqlite"));
@@ -57,6 +58,8 @@ const app = createApp({
   store,
   sessionKey: deriveSessionKey(vault.masterKey),
   accessKey,
+  appVersion,
+  kernelUrlSeed: process.env.VOLT_KERNEL_URL || "http://127.0.0.1:18180",
   kernelToken,
   secureCookies: process.env.VOLT_SECURE_COOKIES === "true",
   trustProxy: process.env.VOLT_TRUST_PROXY === "true" ? 1 : false,
@@ -77,8 +80,18 @@ const app = createApp({
 const server = app.listen(port, host, () => {
   console.log(`Volt is listening on http://${host}:${port}`);
 });
+const trashRetentionTimer = setInterval(() => {
+  try {
+    const purged = store.purgeExpiredEntries();
+    if (purged) console.log(`Permanently deleted ${purged} expired trash ${purged === 1 ? "entry" : "entries"}`);
+  } catch (error) {
+    console.error("Could not run trash retention cleanup", error);
+  }
+}, 60_000);
+trashRetentionTimer.unref();
 
 function shutdown() {
+  clearInterval(trashRetentionTimer);
   server.close(() => {
     store.checkpoint();
     store.close();

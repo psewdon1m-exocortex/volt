@@ -1,14 +1,14 @@
 import http from "node:http";
 
-function request(socketPath, token, route, body, timeout) {
+function request(socketPath, token, route, body, timeout, method = "POST") {
   return new Promise((resolve, reject) => {
-    const payload = Buffer.from(JSON.stringify(body));
+    const payload = body == null ? null : Buffer.from(JSON.stringify(body));
     const call = http.request({
       socketPath,
       path: route,
-      method: "POST",
+      method,
       timeout,
-      headers: { Host: "updater.local", Accept: "application/json", "Content-Type": "application/json", "Content-Length": String(payload.length), ...(token ? { "X-Updater-Token": token } : {}) },
+      headers: { Host: "updater.local", Accept: "application/json", ...(payload ? { "Content-Type": "application/json", "Content-Length": String(payload.length) } : {}), ...(token ? { "X-Updater-Token": token } : {}) },
     }, (response) => {
       const chunks = [];
       let length = 0;
@@ -33,13 +33,14 @@ function request(socketPath, token, route, body, timeout) {
       const unavailable = ["ENOENT", "ECONNREFUSED", "EACCES"].includes(error?.code);
       reject(Object.assign(new Error(unavailable ? "Updater is not installed or is unavailable on this VPS" : error.message), { status: unavailable ? 503 : 502 }));
     });
-    call.write(payload);
+    if (payload) call.write(payload);
     call.end();
   });
 }
 
 export function createUpdaterClient({ socketPath, controlToken, headId }) {
   return {
+    status: () => request(socketPath, "", "/v1/health", null, 3_000, "GET"),
     checkNeptune: (currentVersion) => request(socketPath, "", "/v1/components/neptune-linux/check", { head_id: headId, current_version: currentVersion }, 30_000),
     updateNeptune: (version) => request(socketPath, controlToken, "/v1/components/neptune-linux/update", { head_id: headId, version }, 300_000),
   };

@@ -7,7 +7,6 @@
     "dev": "concurrently -k -n api,ui -c blue,cyan \"node --watch server/index.js\" \"vite --host 0.0.0.0\"",
     "build": "tsc --noEmit && vite build",
     "generate-device-key": "node scripts/generate-device-key.js",
-    "generate-kernel-token": "node scripts/generate-kernel-token.js",
     "start": "node server/index.js",
     "test": "node --test tests/*.test.js",
     "check": "npm run test && npm run build"

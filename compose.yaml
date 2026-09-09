@@ -15,7 +15,7 @@ services:
       VOLT_SECURE_COOKIES: "${VOLT_SECURE_COOKIES:-false}"
       VOLT_TRUST_PROXY: "${VOLT_TRUST_PROXY:-false}"
       VOLT_AUDIT_RETENTION: "${VOLT_AUDIT_RETENTION:-10000}"
-      VOLT_KERNEL_TOKEN_FILE: /run/secrets/volt-kernel.token
+      VOLT_KERNEL_URL: "${VOLT_KERNEL_URL:-http://host.docker.internal:18180}"
     volumes:
       - volt-data:/app/data
       - type: bind
@@ -25,10 +25,6 @@ services:
       - type: bind
         source: "${VOLT_ACCESS_KEY_HOST_PATH:?Set VOLT_ACCESS_KEY_HOST_PATH}"
         target: /run/secrets/volt-access-key
-        read_only: true
-      - type: bind
-        source: "${VOLT_KERNEL_TOKEN_HOST_FILE:?Set VOLT_KERNEL_TOKEN_HOST_FILE}"
-        target: /run/secrets/volt-kernel.token
         read_only: true
     read_only: true
     tmpfs:

@@ -1,7 +1,7 @@
 # Volt
 
 Volt — локальное зашифрованное хранилище Exocortex и единственный источник значений
-для ссылок `volt://<entry-id>/<field-id>` в Kernel Register.
+для ссылок `volt://<entry-id>/<value-position>` в Kernel Register.
 
 ## Что реализовано
 
@@ -9,13 +9,18 @@ Volt — локальное зашифрованное хранилище Exocor
 - открытые и секретные поля; списки и карточки никогда не получают секретное
   значение до явного reveal/copy/edit;
 - неизменяемые ревизии и восстановление старой версии как новой ревизии;
+- корзина с восстановлением, принудительным purge и настраиваемым сроком
+  автоматического необратимого удаления (30 дней по умолчанию);
 - генераторы паролей с точной энтропией, 16-символьных ID, HMAC, RSA и
   самоподписанного ECDSA X.509 сертификата;
 - отдельный machine endpoint для Kernel с общим Kernel-to-Volt token;
 - единый переносимый файл `personal.volt`, открываемый офлайн по Access Key;
 - полный зашифрованный ZIP backup с manifest/checksums и транзакционный replace
   restore;
-- редактируемые тема и Access Key, bounded audit без значений секретов.
+- унифицированный локальный UI: обязательная тёмная тема, контрастный акцент,
+  reorder навигации, dashboard и секций настроек с сохранением порядка;
+- смена Access Key с проверкой текущего ключа, bounded audit без значений
+  секретов и выгрузка redacted-журналов.
 
 ## Модель хранения
 
@@ -30,8 +35,9 @@ Vault master key также находится внутри `personal.volt`, н�
 (64 MiB, 3 прохода) и AES-256-GCM. Поэтому для офлайн-копии достаточно самого
 `personal.volt` и Access Key. Сервер может иметь вторую обёртку от отдельного
 32-байтного device key: она нужна только для unattended-start и не требуется
-офлайн-клиенту. Kernel-to-Volt token хранится вне vault в локальном secret
-file и не входит ни в `personal.volt`, ни в backup.
+офлайн-клиенту. Для Kernel-to-Volt token в настройках хранится только SHA-256
+verifier; исходное значение не входит ни в `personal.volt`, ни в backup и не
+может быть прочитано обратно.
 
 Компрометация `personal.volt` без Access Key или device key не раскрывает
 секреты. Компрометация файла вместе с одним из этих ключей, работающего процесса
@@ -56,20 +62,24 @@ npm run generate-device-key -- C:\secure\volt-device.key
 $env:VOLT_DEVICE_KEY_FILE = 'C:\secure\volt-device.key'
 ```
 
-Для подключения Kernel создайте отдельный общий token:
-
-```powershell
-npm run generate-kernel-token -- C:\secure\volt-kernel.token
-$env:VOLT_KERNEL_TOKEN_FILE = 'C:\secure\volt-kernel.token'
-```
-
 Интерфейс: `http://127.0.0.1:18184`. Для production используйте HTTPS reverse
 proxy, `VOLT_SECURE_COOKIES=true`, внешние read-only secret mounts для device и
-Kernel token и bootstrap Access Key. Kernel и Volt могут работать на разных
-серверах: укажите HTTPS URL Volt в `VOLT_URL` Kernel и безопасно скопируйте одно
-и то же значение `volt-kernel.token` в локальный secret file на обоих серверах.
+bootstrap Access Key. Kernel и Volt могут работать на разных серверах: в
+Settings → Security интерфейса Kernel укажите HTTPS URL Volt и общий токен, а
+затем задайте то же значение в Settings интерфейса Volt. Volt сохраняет только
+verifier, поэтому после сохранения токен нельзя посмотреть — только заменить.
 Прямой listener по-прежнему публикуется только на loopback; доступ между
 серверами проходит через HTTPS reverse proxy.
+
+Volt следует общему UI/UX-контракту Exocortex: true-black поверхности,
+Consolas для интерфейсного текста, Space Grotesk только для названия сервиса и
+страниц, квадратная геометрия без теней и градиентов, 250 px sidebar и 123 px
+page header. Порядок основных экранов, dashboard-карточек и обязательных
+секций Settings хранится внутри `personal.volt`. Новая продуктовая иконка из
+`.src` используется в login, sidebar и favicon.
+
+Старые `VOLT_KERNEL_TOKEN` и `VOLT_KERNEL_TOKEN_FILE` принимаются при запуске
+только как источник однократной миграции, если токен ещё не задан в настройках.
 
 При первом запуске новой версии существующие `data/volt.sqlite` и legacy master
 key автоматически копируются в `data/personal.volt`. Секреты не
@@ -85,11 +95,13 @@ grants. Старые `VOLT_SERVICE_TOKEN` после обновления бол
 ## Подключение через Kernel
 
 1. Создайте запись и нужное поле в Volt.
-2. Для каждого ключа Kernel Register сохраните ссылку на поле, например
-   `services.laboratory.ai.gemini_api_key = volt://<entry>/<field>`.
-3. Передайте сервису только общий `KERNEL_SERVICE_TOKEN`. Сервис вызывает
+2. Один раз задайте одинаковый Kernel-to-Volt token в Settings обоих приложений
+   и URL Volt в Settings Kernel.
+3. Для каждого ключа Kernel Register сохраните ссылку на поле, например
+   `services.laboratory.ai.gemini_api_key = volt://<entry>/1`.
+4. Передайте сервису только общий `KERNEL_SERVICE_TOKEN`. Сервис вызывает
    `POST /api/v1/register/resolve` с именем Register key.
-4. Kernel обращается к `POST /api/v1/internal/kernel/resolve` в Volt со своим
+5. Kernel обращается к `POST /api/v1/internal/kernel/resolve` в Volt со своим
    отдельным token и возвращает результат сервису.
 
 Оба batch endpoint ограничены 20 уникальными элементами и работают

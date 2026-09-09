@@ -1,4 +1,4 @@
-import type { AuditEvent, Entry, GeneratedValue, Revision } from "./types";
+import type { AuditEvent, Entry, GeneratedValue, Revision, TrashEntry } from "./types";
 
 export class ApiError extends Error {
   code: string;
@@ -27,6 +27,39 @@ export type NeptuneUpdate = {
   update_available: boolean;
 };
 
+export type InterfaceSettings = {
+  accent: string;
+  sidebar_mode: "fixed" | "auto";
+  navigation_order: string[];
+  settings_order: string[];
+  dashboard_order: string[];
+};
+
+export type DashboardStats = {
+  measured_at: string;
+  entries: number;
+  cpu: { percent: number | null; logical_cores: number };
+  memory: { used_bytes: number; total_bytes: number; percent: number | null };
+  disk: { used_bytes: number; total_bytes: number; percent: number | null } | null;
+  uptime_seconds: number;
+};
+
+export type KernelStatus = {
+  configured: boolean;
+  url: string;
+  reachable: boolean;
+  identity: string | null;
+  checked_at: string;
+  error: string | null;
+};
+
+export type TrashSettings = {
+  retention_days: number;
+  min_days: number;
+  max_days: number;
+  purged_entries?: number;
+};
+
 async function request<T>(url: string, init?: RequestInit): Promise<T> {
   const response = await fetch(url, {
     ...init,
@@ -40,16 +73,20 @@ async function request<T>(url: string, init?: RequestInit): Promise<T> {
 }
 
 export const api = {
-  session: () => request<{ authenticated: boolean; appearance: "dark" | "light" }>("/api/v1/session"),
-  unlock: (accessKey: string) => request<{ authenticated: boolean; appearance: "dark" | "light" }>("/api/v1/session", {
+  session: () => request<{ authenticated: boolean; appearance: "dark"; interface: InterfaceSettings }>("/api/v1/session"),
+  unlock: (accessKey: string) => request<{ authenticated: boolean; appearance: "dark"; interface: InterfaceSettings }>("/api/v1/session", {
     method: "POST", body: JSON.stringify({ access_key: accessKey }),
   }),
   lock: () => request<void>("/api/v1/session", { method: "DELETE" }),
-  overview: () => request<{ entries: number; revisions: number; appearance: "dark" | "light" }>("/api/v1/overview"),
+  overview: () => request<{ entries: number; revisions: number; appearance: "dark"; interface: InterfaceSettings }>("/api/v1/overview"),
+  dashboard: () => request<DashboardStats>("/api/v1/dashboard"),
   entries: () => request<{ entries: Entry[] }>("/api/v1/entries"),
   createEntry: (payload: unknown) => request<Entry>("/api/v1/entries", { method: "POST", body: JSON.stringify(payload) }),
   updateEntry: (id: string, payload: unknown) => request<Entry>(`/api/v1/entries/${id}`, { method: "PUT", body: JSON.stringify(payload) }),
   deleteEntry: (id: string) => request<void>(`/api/v1/entries/${id}`, { method: "DELETE" }),
+  trash: () => request<{ entries: TrashEntry[]; retention_days: number }>("/api/v1/trash"),
+  restoreEntry: (id: string) => request<Entry>(`/api/v1/trash/${id}/restore`, { method: "POST", body: "{}" }),
+  purgeEntry: (id: string) => request<void>(`/api/v1/trash/${id}`, { method: "DELETE" }),
   reorderEntries: (ids: string[]) => request<void>("/api/v1/entries/reorder", { method: "POST", body: JSON.stringify({ ids }) }),
   reveal: (entryId: string, fieldId: string, revision?: number) => request<{ value: string; revision: number }>(
     `/api/v1/entries/${entryId}/fields/${fieldId}/reveal`,
@@ -60,16 +97,27 @@ export const api = {
   restoreRevision: (entryId: string, revision: number) => request<Entry>(`/api/v1/entries/${entryId}/revisions/${revision}/restore`, { method: "POST", body: "{}" }),
   generate: (options: Record<string, unknown>) => request<GeneratedValue>("/api/v1/generate", { method: "POST", body: JSON.stringify(options) }),
   audit: () => request<{ events: AuditEvent[] }>("/api/v1/audit?limit=250"),
-  appearance: (appearance: "dark" | "light") => request<{ appearance: "dark" | "light" }>("/api/v1/settings/appearance", { method: "PUT", body: JSON.stringify({ appearance }) }),
-  changeAccessKey: (accessKey: string) => request<void>("/api/v1/settings/access-key", { method: "PUT", body: JSON.stringify({ access_key: accessKey }) }),
+  interfaceSettings: () => request<InterfaceSettings>("/api/v1/settings/interface"),
+  updateInterface: (update: Partial<InterfaceSettings>) => request<InterfaceSettings>("/api/v1/settings/interface", { method: "PUT", body: JSON.stringify(update) }),
+  trashSettings: () => request<TrashSettings>("/api/v1/settings/trash"),
+  updateTrashSettings: (retentionDays: number) => request<TrashSettings>("/api/v1/settings/trash", { method: "PUT", body: JSON.stringify({ retention_days: retentionDays }) }),
+  changeAccessKey: (currentAccessKey: string, newAccessKey: string) => request<void>("/api/v1/settings/access-key", { method: "PUT", body: JSON.stringify({ current_access_key: currentAccessKey, new_access_key: newAccessKey }) }),
+  kernelAccess: () => request<KernelStatus>("/api/v1/settings/kernel-access"),
+  setKernelAccess: (update: { token?: string; url?: string }) => request<KernelStatus>("/api/v1/settings/kernel-access", { method: "PUT", body: JSON.stringify(update) }),
+  updateStatus: () => request<{ installed_version: string; mechanism: string; updater: { reachable: boolean; version: string | null; error: string | null } }>("/api/v1/update/status"),
   downloadVaultFile: async () => {
     const response = await fetch("/api/v1/vault-file", { credentials: "same-origin" });
-    if (!response.ok) throw new ApiError(response.status, "VAULT_EXPORT_FAILED", "Не удалось создать personal.volt");
+    if (!response.ok) throw new ApiError(response.status, "VAULT_EXPORT_FAILED", "Could not create personal.volt");
     return { blob: await response.blob(), disposition: response.headers.get("content-disposition") ?? "" };
   },
   downloadBackup: async () => {
     const response = await fetch("/api/v1/backup", { credentials: "same-origin" });
-    if (!response.ok) throw new ApiError(response.status, "BACKUP_FAILED", "Не удалось создать резервную копию");
+    if (!response.ok) throw new ApiError(response.status, "BACKUP_FAILED", "Could not create backup");
+    return { blob: await response.blob(), disposition: response.headers.get("content-disposition") ?? "" };
+  },
+  downloadLogs: async () => {
+    const response = await fetch("/api/v1/logs/archive", { credentials: "same-origin" });
+    if (!response.ok) throw new ApiError(response.status, "LOG_EXPORT_FAILED", "Could not export logs");
     return { blob: await response.blob(), disposition: response.headers.get("content-disposition") ?? "" };
   },
   inspectBackup: (file: File) => {

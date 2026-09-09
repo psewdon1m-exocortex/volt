@@ -4,24 +4,28 @@ import { ApiError, api } from "./api";
 import { ConfirmDialog } from "./ConfirmDialog";
 import { Icon } from "./icons";
 import type { Entry, GeneratedValue, Revision, VoltField } from "./types";
+import { DragDots, Modal } from "./Ui";
+import { dropItem, moveItem } from "./ui-helpers";
 
 type Toast = (message: string, tone?: "ok" | "error") => void;
 
 function dateTime(value: string) {
-  return new Intl.DateTimeFormat("ru-RU", { dateStyle: "medium", timeStyle: "short" }).format(new Date(value));
+  return new Intl.DateTimeFormat("en-US", { dateStyle: "medium", timeStyle: "short" }).format(new Date(value));
 }
 
 function errorMessage(error: unknown) {
-  return error instanceof Error ? error.message : "Не удалось выполнить действие";
+  return error instanceof Error ? error.message : "Could not complete the action";
 }
 
-function FieldValue({ entryId, field, revision, toast }: { entryId: string; field: VoltField; revision?: number; toast: Toast }) {
+function FieldValue({ entryId, field, position, revision, toast }: { entryId: string; field: VoltField; position: number; revision?: number; toast: Toast }) {
   const [revealed, setRevealed] = useState<string | null>(null);
+  const [manualReference, setManualReference] = useState<string | null>(null);
   const secret = field.visibility === "secret";
 
   useEffect(() => {
     setRevealed(null);
-  }, [entryId, field.id, revision]);
+    setManualReference(null);
+  }, [entryId, field.id, position, revision]);
   useEffect(() => {
     const hide = () => { if (document.hidden) setRevealed(null); };
     document.addEventListener("visibilitychange", hide);
@@ -49,35 +53,51 @@ function FieldValue({ entryId, field, revision, toast }: { entryId: string; fiel
     event.stopPropagation();
     try {
       const value = await getValue();
-      await navigator.clipboard.writeText(value);
-      toast(`${field.key}: скопировано`);
-      window.setTimeout(() => navigator.clipboard.readText()
-        .then((current) => current === value ? navigator.clipboard.writeText("") : undefined)
-        .catch(() => undefined), 30_000);
+      if (secret && revealed == null) {
+        setRevealed(value);
+        toast("Value revealed. Press Copy again to replace the clipboard contents.");
+        return;
+      }
+      if (!window.isSecureContext || !document.hasFocus() || !navigator.clipboard?.writeText) {
+        setRevealed(value);
+        toast("Clipboard unavailable — select the displayed value manually", "error");
+        return;
+      }
+      try {
+        await navigator.clipboard.writeText(value);
+        toast("Value copied");
+      } catch {
+        setRevealed(value);
+        toast("Clipboard unavailable — the value is shown for manual copying", "error");
+      }
     } catch (error) { toast(errorMessage(error), "error"); }
   }
 
   async function copyReference(event: React.MouseEvent) {
     event.stopPropagation();
     try {
-      await navigator.clipboard.writeText(`volt://${entryId}/${field.id}`);
-      toast(`${field.key}: ссылка скопирована`);
+      const reference = `volt://${entryId}/${position}`;
+      if (!window.isSecureContext || !document.hasFocus() || !navigator.clipboard?.writeText) {
+        setManualReference(reference); toast("Clipboard unavailable — the reference is shown for manual copying", "error"); return;
+      }
+      try { await navigator.clipboard.writeText(reference); setManualReference(null); toast("Value reference copied"); }
+      catch { setManualReference(reference); toast("Clipboard unavailable — the reference is shown for manual copying", "error"); }
     } catch (error) { toast(errorMessage(error), "error"); }
   }
 
   return (
     <div className="field-row">
       <div className="field-copy">
-        <span className="field-label">{field.key}</span>
         <span className={`field-value${secret ? " mono" : ""}`} title={secret ? undefined : field.value ?? ""}>
           {secret && revealed == null ? "••••••••••••" : (revealed ?? field.value ?? "—")}
         </span>
       </div>
       <div className="field-actions">
-        <button className="icon-button" type="button" title="Скопировать ссылку для Kernel Register" aria-label="Скопировать volt-ссылку" onClick={copyReference}><Icon name="link" /></button>
-        {secret && <button className="icon-button" type="button" aria-label={revealed == null ? "Показать значение" : "Скрыть значение"} onClick={reveal}><Icon name="eye" /></button>}
-        <button className="icon-button" type="button" aria-label="Скопировать значение" onClick={copy}><Icon name="copy" /></button>
+        {revision == null && <button className="icon-button" type="button" title="Copy reference for Kernel Register" aria-label="Copy Volt reference" onClick={copyReference}><Icon name="link" /></button>}
+        {secret && <button className="icon-button" type="button" aria-label={revealed == null ? "Reveal value" : "Hide value"} onClick={reveal}><Icon name="eye" /></button>}
+        <button className="icon-button" type="button" aria-label="Copy value and replace clipboard contents" onClick={copy}><Icon name="copy" /></button>
       </div>
+      {manualReference && <input className="manual-copy" aria-label="Volt reference for manual copying" readOnly value={manualReference} onFocus={(event) => event.currentTarget.select()} />}
     </div>
   );
 }
@@ -101,46 +121,51 @@ function RevisionPanel({ entry, toast, onRestored }: { entry: Entry; toast: Toas
     if (!selected) return;
     try {
       await api.restoreRevision(entry.id, selected.revision);
-      toast(`Ревизия ${selected.revision} восстановлена`);
+      toast(`Revision ${selected.revision} restored`);
       onRestored();
       setRestorePending(false);
     } catch (error) { toast(errorMessage(error), "error"); }
   }
 
   return (
-    <div className="revision-panel" onClick={(event) => event.stopPropagation()}>
+    <section className="revision-panel editor-revisions" aria-label="Version history" onClick={(event) => event.stopPropagation()}>
       <div className="revision-heading">
-        <div><span className="eyebrow">ИСТОРИЯ</span><strong>{revisions.length} ревизий</strong></div>
-        <span className="muted">Старые значения раскрываются только вручную</span>
+        <div><span className="eyebrow">HISTORY</span><strong>{revisions.length} revisions</strong></div>
+        <span className="muted">Previous values are revealed only on request</span>
       </div>
-      {busy ? <div className="inline-loader">Читаем историю…</div> : (
+      {busy ? <div className="inline-loader">Loading history…</div> : (
         <div className="revision-layout">
           <div className="revision-list">
             {revisions.map((revision) => (
-              <button key={revision.id} className={`revision-item${selected?.revision === revision.revision ? " selected" : ""}`} onClick={() => inspect(revision)}>
-                <span><b>v{revision.revision}</b>{revision.current && <em>текущая</em>}</span>
+              <button type="button" key={revision.id} className={`revision-item${selected?.revision === revision.revision ? " selected" : ""}`} onClick={() => inspect(revision)}>
+                <span><b>v{revision.revision}</b>{revision.current && <em>current</em>}</span>
                 <small>{dateTime(revision.created_at)}</small>
-                <small>{revision.reason ?? "без комментария"}</small>
+                <small>{revision.reason ?? "no comment"}</small>
               </button>
             ))}
           </div>
           <div className="revision-preview">
-            {!selected ? <div className="preview-placeholder">Выберите ревизию для просмотра</div> : <>
+            {!selected ? <div className="preview-placeholder">Select a revision to preview</div> : <>
               <div className="revision-preview-head">
-                <div><span className="eyebrow">СНИМОК</span><h4>v{selected.revision} · {selected.title}</h4></div>
-                {selected.revision !== entry.revision && <button className="button secondary small" onClick={() => setRestorePending(true)}>Восстановить</button>}
+                <div><span className="eyebrow">SNAPSHOT</span><h4>v{selected.revision} · {selected.title}</h4></div>
+                {selected.revision !== entry.revision && <button type="button" className="button secondary small" onClick={() => setRestorePending(true)}>Restore</button>}
               </div>
-              {selected.fields.map((field) => <FieldValue key={field.id} entryId={entry.id} field={field} revision={selected.revision} toast={toast} />)}
+              {selected.fields.map((field, index) => <FieldValue key={field.id} entryId={entry.id} field={field} position={index + 1} revision={selected.revision} toast={toast} />)}
             </>}
           </div>
         </div>
       )}
-      {restorePending && selected && <ConfirmDialog title={`Восстановить ревизию ${selected.revision}?`} body={<p>Её значения станут новой ревизией. Текущая версия останется в истории.</p>} confirmLabel="Восстановить" onClose={() => setRestorePending(false)} onConfirm={restore} />}
-    </div>
+      {restorePending && selected && <ConfirmDialog title={`Restore revision ${selected.revision}?`} body={<p>Its values will become a new revision. The current version will remain in history.</p>} confirmLabel="Restore" onClose={() => setRestorePending(false)} onConfirm={restore} />}
+    </section>
   );
 }
 
 interface EditorValue extends VoltField { value: string }
+
+function createEditorValue(value = "", visibility: VoltField["visibility"] = "secret"): EditorValue {
+  const id = crypto.randomUUID();
+  return { id, key: `value_${id.slice(0, 8)}`, value, visibility, generator: null };
+}
 
 function GeneratorDialog({ availableSlots, onApply, onClose, toast }: {
   availableSlots: number;
@@ -160,7 +185,7 @@ function GeneratorDialog({ availableSlots, onApply, onClose, toast }: {
 
   async function generate() {
     if ((type === "rsa" || type === "certificate") && availableSlots < 2) {
-      toast("Для пары ключей нужны два свободных значения", "error");
+      toast("A key pair requires two available value slots", "error");
       return;
     }
     const options: Record<string, unknown> = { type };
@@ -169,39 +194,38 @@ function GeneratorDialog({ availableSlots, onApply, onClose, toast }: {
     if (type === "rsa") options.modulus_length = rsaBits;
     if (type === "certificate") Object.assign(options, { common_name: commonName, sans: sans.split(",").map((item) => item.trim()).filter(Boolean), valid_days: 365 });
     setBusy(true);
-    try { setPreview(await api.generate(options)); }
+    try {
+      const result = await api.generate(options);
+      if (!Array.isArray(result.values) || !result.values.length) throw new Error("Generator returned an invalid response");
+      setPreview(result);
+    }
     catch (error) { toast(errorMessage(error), "error"); }
     finally { setBusy(false); }
   }
 
   return (
-    <dialog open className="modal generator-modal" aria-labelledby="generator-title">
-      <div className="modal-scrim" onClick={onClose} />
-      <div className="modal-card">
-        <header className="modal-header"><div><span className="eyebrow">ГЕНЕРАТОР</span><h2 id="generator-title">Новое значение</h2></div><button className="icon-button" onClick={onClose}><Icon name="close" /></button></header>
-        <div className="generator-tabs">
-          {[['password', 'Пароль'], ['identifier', 'ID'], ['certificate', 'Сертификат'], ['hmac', 'HMAC'], ['rsa', 'RSA']].map(([value, label]) => (
+    <Modal title="New value" eyebrow="GENERATOR" dirty={busy} onClose={onClose} footer={<><button className="button ghost" onClick={onClose}>Cancel</button><button className="button" disabled={!preview} onClick={() => preview && onApply(preview)}>Use value</button></>}>
+      <div className="generator-tabs">
+          {[['password', 'Password'], ['identifier', 'ID'], ['certificate', 'Certificate'], ['hmac', 'HMAC'], ['rsa', 'RSA']].map(([value, label]) => (
             <button key={value} className={type === value ? "active" : ""} onClick={() => { setType(value); setPreview(null); }}>{label}</button>
           ))}
-        </div>
-        <div className="generator-body">
-          {type === "password" && <>
-            <label className="control-label">Длина <output>{length}</output><input type="range" min="4" max="128" value={length} onChange={(event) => setLength(Number(event.target.value))} /></label>
-            <div className="option-grid">
-              {[['lowercase', 'a–z'], ['uppercase', 'A–Z'], ['numbers', '0–9'], ['special', 'спецсимволы']].map(([key, label]) => <label className="check-option" key={key}><input type="checkbox" checked={sets[key as keyof typeof sets]} onChange={(event) => setSets({ ...sets, [key]: event.target.checked })} /><span>{label}</span></label>)}
-            </div>
-            <p className="hint">Символы <code>"</code> и <code>@</code> всегда исключены.</p>
-          </>}
-          {type === "hmac" && <label className="control-label">Размер ключа<select value={hmacBytes} onChange={(event) => setHmacBytes(Number(event.target.value))}><option value="32">256 бит</option><option value="48">384 бит</option><option value="64">512 бит</option></select></label>}
-          {type === "rsa" && <label className="control-label">Размер RSA<select value={rsaBits} onChange={(event) => setRsaBits(Number(event.target.value))}><option value="2048">2048 бит</option><option value="3072">3072 бит</option><option value="4096">4096 бит</option></select><small>Будут добавлены приватный и публичный ключи.</small></label>}
-          {type === "certificate" && <div className="form-grid"><label className="control-label">Common Name<input value={commonName} onChange={(event) => setCommonName(event.target.value)} /></label><label className="control-label">SAN, через запятую<input value={sans} onChange={(event) => setSans(event.target.value)} /></label><small>Создаётся самоподписанный ECDSA P-256 сертификат и приватный ключ.</small></div>}
-          {type === "identifier" && <div className="generator-note"><strong>16 знаков</strong><span>A–Z и 0–9 · ≈82,7 бит энтропии</span></div>}
-          <button className="button generator-action" onClick={generate} disabled={busy}>{busy ? "Генерируем…" : preview ? "Сгенерировать заново" : "Сгенерировать"}</button>
-          {preview && <div className="generated-preview"><div><span className="eyebrow">РЕЗУЛЬТАТ</span>{preview.entropy_bits != null && <b>{preview.entropy_bits} бит энтропии</b>}</div>{preview.values.map((value) => <code key={value.key}>{value.value}</code>)}</div>}
-        </div>
-        <footer className="modal-footer"><button className="button ghost" onClick={onClose}>Отмена</button><button className="button" disabled={!preview} onClick={() => preview && onApply(preview)}>Использовать</button></footer>
       </div>
-    </dialog>
+      <div className="generator-body">
+          {type === "password" && <>
+            <label className="control-label">Length <output>{length}</output><input type="range" min="4" max="128" value={length} onChange={(event) => setLength(Number(event.target.value))} /></label>
+            <div className="option-grid">
+              {[['lowercase', 'a–z'], ['uppercase', 'A–Z'], ['numbers', '0–9'], ['special', 'special characters']].map(([key, label]) => <label className="check-option" key={key}><input type="checkbox" checked={sets[key as keyof typeof sets]} onChange={(event) => setSets({ ...sets, [key]: event.target.checked })} /><span>{label}</span></label>)}
+            </div>
+            <p className="hint"><code>"</code> and <code>@</code> are always excluded.</p>
+          </>}
+          {type === "hmac" && <label className="control-label">Key size<select value={hmacBytes} onChange={(event) => setHmacBytes(Number(event.target.value))}><option value="32">256 bits</option><option value="48">384 bits</option><option value="64">512 bits</option></select></label>}
+          {type === "rsa" && <label className="control-label">RSA size<select value={rsaBits} onChange={(event) => setRsaBits(Number(event.target.value))}><option value="2048">2048 bits</option><option value="3072">3072 bits</option><option value="4096">4096 bits</option></select><small>A private key and public key will be added.</small></label>}
+          {type === "certificate" && <div className="form-grid"><label className="control-label">Common Name<input value={commonName} onChange={(event) => setCommonName(event.target.value)} /></label><label className="control-label">SAN, comma-separated<input value={sans} onChange={(event) => setSans(event.target.value)} /></label><small>For local TLS and testing. Creates a self-signed certificate that browsers do not trust automatically, plus its secret private key.</small></div>}
+          {type === "identifier" && <div className="generator-note"><strong>16 characters</strong><span>A–Z and 0–9 · ≈82.7 bits of entropy</span></div>}
+          <button className="button generator-action" onClick={generate} disabled={busy}>{busy ? "Generating…" : preview ? "Generate again" : "Generate"}</button>
+          {preview && <div className="generated-preview"><div><span className="eyebrow">RESULT</span>{preview.entropy_bits != null && <b>{preview.entropy_bits} bits of entropy</b>}</div>{preview.values.map((value) => <code key={value.key}>{value.value}</code>)}</div>}
+      </div>
+    </Modal>
   );
 }
 
@@ -215,27 +239,42 @@ function EntryEditor({ entry, initialFields, onClose, onSaved, toast }: {
   const [title, setTitle] = useState(entry?.title ?? "");
   const [project, setProject] = useState(entry?.project ?? "");
   const [reason, setReason] = useState("");
-  const [fields, setFields] = useState<EditorValue[]>(initialFields ?? [{ id: crypto.randomUUID(), key: "", value: "", visibility: "secret", generator: null }]);
+  const [fields, setFields] = useState<EditorValue[]>(() => initialFields ?? [createEditorValue()]);
   const [generatorIndex, setGeneratorIndex] = useState<number | null>(null);
   const [busy, setBusy] = useState(false);
+  const [dragReadyValue, setDragReadyValue] = useState<string | null>(null);
+  const [draggingValue, setDraggingValue] = useState<string | null>(null);
+  const [valueDropTarget, setValueDropTarget] = useState<{ id: string; before: boolean } | null>(null);
 
   function updateField(index: number, update: Partial<EditorValue>) {
-    setFields(fields.map((field, fieldIndex) => fieldIndex === index ? { ...field, ...update } : field));
+    setFields((current) => current.map((field, fieldIndex) => fieldIndex === index ? { ...field, ...update } : field));
+  }
+
+  function moveField(index: number, direction: -1 | 1) {
+    setFields((current) => moveItem(current, index, direction));
+  }
+
+  function dropField(targetId: string, before: boolean) {
+    if (!draggingValue) return;
+    setFields((current) => dropItem(current, current.findIndex((field) => field.id === draggingValue), current.findIndex((field) => field.id === targetId), before));
+    setDragReadyValue(null);
+    setDraggingValue(null);
+    setValueDropTarget(null);
   }
 
   function applyGenerated(result: GeneratedValue) {
     if (generatorIndex == null) return;
     const values: EditorValue[] = result.values.map((value) => ({
-      id: crypto.randomUUID(), key: value.key, value: value.value, visibility: value.visibility, generator: { type: result.kind, ...result.parameters },
+      ...createEditorValue(value.value, value.visibility), generator: { type: result.kind, ...result.parameters },
     } satisfies EditorValue));
     if (fields.length - 1 + values.length > 5) {
-      toast("Для пары ключей освободите ещё одно место в записи", "error");
+      toast("Free one more value slot for the key pair", "error");
       return;
     }
     const current = fields[generatorIndex];
     values[0].id = current.id;
-    values[0].key = current.key || values[0].key;
-    values[0].visibility = current.visibility;
+    values[0].key = current.key;
+    if (values.length === 1) values[0].visibility = current.visibility;
     setFields([...fields.slice(0, generatorIndex), ...values, ...fields.slice(generatorIndex + 1)]);
     setGeneratorIndex(null);
   }
@@ -247,45 +286,59 @@ function EntryEditor({ entry, initialFields, onClose, onSaved, toast }: {
     try {
       if (entry) await api.updateEntry(entry.id, payload);
       else await api.createEntry(payload);
-      toast(entry ? "Запись обновлена — создана новая ревизия" : "Запись создана");
+      toast(entry ? "Entry updated — a new revision was created" : "Entry created");
       onSaved();
     } catch (error) {
-      toast(error instanceof ApiError && error.code === "ENTRY_REVISION_CONFLICT" ? "Запись уже изменилась. Закройте редактор и откройте её снова." : errorMessage(error), "error");
+      toast(error instanceof ApiError && error.code === "ENTRY_REVISION_CONFLICT" ? "This entry has already changed. Close the editor and open it again." : errorMessage(error), "error");
     } finally { setBusy(false); }
   }
 
   return <>
-    <dialog open className="modal" aria-labelledby="entry-editor-title">
-      <div className="modal-scrim" onClick={onClose} />
-      <form className="modal-card editor-card" onSubmit={save}>
-        <header className="modal-header"><div><span className="eyebrow">{entry ? `РЕВИЗИЯ ${entry.revision + 1}` : "НОВАЯ ЗАПИСЬ"}</span><h2 id="entry-editor-title">{entry ? "Изменить запись" : "Добавить в Volt"}</h2></div><button className="icon-button" type="button" onClick={onClose}><Icon name="close" /></button></header>
+    <Modal title={entry ? "Edit entry" : "Add to Volt"} eyebrow={entry ? `ENTITY ${entry.id}` : "NEW ENTRY"} className="editor-card" dirty={busy || Boolean(title || project || fields.some((field) => field.value))} onClose={onClose} footer={<><button className="button ghost" type="button" onClick={onClose}>Cancel</button><button className="button" form="entry-editor-form" disabled={busy}>{busy ? "Saving…" : "Save"}</button></>}>
+      <form id="entry-editor-form" onSubmit={save}>
         <div className="editor-body">
-          <div className="form-grid two"><label className="control-label">Название<input required maxLength={120} autoFocus value={title} onChange={(event) => setTitle(event.target.value)} placeholder="Google account" /></label><label className="control-label">Проект <span>необязательно</span><input maxLength={80} value={project} onChange={(event) => setProject(event.target.value)} placeholder="personal" /></label></div>
-          <div className="values-header"><div><span className="eyebrow">ЗНАЧЕНИЯ</span><strong>{fields.length} / 5</strong></div>{fields.length < 5 && <button className="button secondary small" type="button" onClick={() => setFields([...fields, { id: crypto.randomUUID(), key: "", value: "", visibility: "secret", generator: null }])}><Icon name="plus" />Добавить</button>}</div>
+          <div className="form-grid two editor-identity"><label className="control-label">Title<input required maxLength={120} autoFocus value={title} onChange={(event) => setTitle(event.target.value)} /></label><label className="control-label">Project<input maxLength={80} value={project} onChange={(event) => setProject(event.target.value)} /></label></div>
+          <div className="values-header"><div><span className="eyebrow">VALUES</span><strong>{fields.length} / 5</strong></div>{fields.length < 5 && <button className="button secondary small" type="button" onClick={() => setFields([...fields, createEditorValue()])}><Icon name="plus" />Add</button>}</div>
+          <p className="hint">Kernel references use these 1-based positions. Reordering or deleting values changes what an existing reference resolves.</p>
           <div className="editor-values">
-            {fields.map((field, index) => <div className="editor-value" key={field.id}>
+            {fields.map((field, index) => {
+              const dropClass = valueDropTarget?.id === field.id ? (valueDropTarget.before ? " drop-before" : " drop-after") : "";
+              return <div className={`editor-value${draggingValue === field.id ? " dragging" : ""}${dropClass}`} key={field.id} draggable={dragReadyValue === field.id} onDragStart={(event) => { event.dataTransfer.effectAllowed = "move"; setDraggingValue(field.id); }} onDragEnd={() => { setDragReadyValue(null); setDraggingValue(null); setValueDropTarget(null); }} onDragOver={(event) => { event.preventDefault(); const rect = event.currentTarget.getBoundingClientRect(); setValueDropTarget({ id: field.id, before: event.clientY < rect.top + rect.height / 2 }); }} onDrop={(event) => { event.preventDefault(); dropField(field.id, valueDropTarget?.id === field.id ? valueDropTarget.before : true); }}>
+              <DragDots label={`Move value ${index + 1}`} onPointerDown={() => setDragReadyValue(field.id)} onPointerUp={() => setDragReadyValue(null)} onKeyDown={(event) => { if (!event.altKey || !["ArrowUp", "ArrowDown"].includes(event.key)) return; event.preventDefault(); moveField(index, event.key === "ArrowUp" ? -1 : 1); }} />
               <span className="value-number">{String(index + 1).padStart(2, "0")}</span>
-              <div className="value-inputs"><input aria-label={`Название значения ${index + 1}`} required maxLength={64} value={field.key} onChange={(event) => updateField(index, { key: event.target.value })} placeholder="password" /><textarea aria-label={`Значение ${index + 1}`} required rows={field.value.includes("\n") ? 5 : 1} value={field.value} onChange={(event) => updateField(index, { value: event.target.value })} placeholder="Значение" /></div>
-              <div className="value-tools"><div className="segmented"><button type="button" className={field.visibility === "secret" ? "active" : ""} onClick={() => updateField(index, { visibility: "secret" })}>Секрет</button><button type="button" className={field.visibility === "plain" ? "active" : ""} onClick={() => updateField(index, { visibility: "plain" })}>Открыто</button></div><button className="icon-button accent" type="button" title="Сгенерировать" onClick={() => setGeneratorIndex(index)}><Icon name="spark" /></button>{fields.length > 1 && <button className="icon-button danger" type="button" title="Удалить значение" onClick={() => setFields(fields.filter((_, i) => i !== index))}><Icon name="trash" /></button>}</div>
-            </div>)}
+              <textarea className={field.visibility === "secret" ? "secret-entry-value" : ""} aria-label={`${field.visibility === "secret" ? "Secret " : ""}Value ${index + 1}`} required rows={field.value.includes("\n") ? 5 : 1} value={field.value} onChange={(event) => updateField(index, { value: event.target.value })} onCopy={(event) => { if (field.visibility !== "secret") return; const start = event.currentTarget.selectionStart; const end = event.currentTarget.selectionEnd; if (start === end) return; event.preventDefault(); event.clipboardData.setData("text/plain", field.value.slice(start, end)); }} placeholder="Value" />
+              <div className="value-tools"><div className="segmented"><button type="button" className={field.visibility === "secret" ? "active" : ""} onClick={() => updateField(index, { visibility: "secret" })}>Secret</button><button type="button" className={field.visibility === "plain" ? "active" : ""} onClick={() => updateField(index, { visibility: "plain" })}>Plain</button></div><button className="icon-button accent" type="button" title="Generate" onClick={() => setGeneratorIndex(index)}><Icon name="spark" /></button>{fields.length > 1 && <button className="icon-button danger" type="button" title="Delete value" onClick={() => setFields(fields.filter((_, i) => i !== index))}><Icon name="trash" /></button>}</div>
+            </div>; })}
           </div>
-          {entry && <label className="control-label">Комментарий к ревизии <span>необязательно</span><input maxLength={240} value={reason} onChange={(event) => setReason(event.target.value)} placeholder="Пароль обновлён" /></label>}
+          {entry && <label className="control-label">Revision comment <span>optional</span><input maxLength={240} value={reason} onChange={(event) => setReason(event.target.value)} placeholder="Password updated" /></label>}
         </div>
-        <footer className="modal-footer"><button className="button ghost" type="button" onClick={onClose}>Отмена</button><button className="button" disabled={busy}>{busy ? "Сохраняем…" : "Сохранить"}</button></footer>
       </form>
-    </dialog>
+      {entry && <RevisionPanel entry={entry} toast={toast} onRestored={onSaved} />}
+    </Modal>
     {generatorIndex != null && <GeneratorDialog availableSlots={6 - fields.length} toast={toast} onClose={() => setGeneratorIndex(null)} onApply={applyGenerated} />}
   </>;
 }
 
-function EntryCard({ entry, onChanged, toast, move }: { entry: Entry; onChanged: () => void; toast: Toast; move: (direction: -1 | 1) => void }) {
-  const [expanded, setExpanded] = useState(false);
+function EntryCard({ entry, index, onChanged, toast, move, dragging, dropTarget, onDragStart, onDragEnd, onDragPosition, onDrop }: {
+  entry: Entry;
+  index: number;
+  onChanged: () => void;
+  toast: Toast;
+  move: (direction: -1 | 1) => void;
+  dragging: string | null;
+  dropTarget: { id: string; before: boolean } | null;
+  onDragStart: () => void;
+  onDragEnd: () => void;
+  onDragPosition: (before: boolean) => void;
+  onDrop: () => void;
+}) {
   const [editorFields, setEditorFields] = useState<EditorValue[] | null>(null);
   const [loadingEdit, setLoadingEdit] = useState(false);
   const [deletePending, setDeletePending] = useState(false);
+  const [dragReady, setDragReady] = useState(false);
 
-  async function edit(event: React.MouseEvent) {
-    event.stopPropagation();
+  async function openEditor() {
+    if (loadingEdit) return;
     setLoadingEdit(true);
     try {
       const resolved = await Promise.all(entry.fields.map(async (field) => ({
@@ -298,20 +351,21 @@ function EntryCard({ entry, onChanged, toast, move }: { entry: Entry; onChanged:
   }
 
   async function remove() {
-    try { await api.deleteEntry(entry.id); toast("Запись перемещена в удалённые"); setDeletePending(false); onChanged(); }
+    try { await api.deleteEntry(entry.id); toast("Entry moved to trash"); setDeletePending(false); onChanged(); }
     catch (error) { toast(errorMessage(error), "error"); }
   }
 
+  const dropClass = dropTarget?.id === entry.id ? (dropTarget.before ? " drop-before" : " drop-after") : "";
   return <>
-    <article className={`entry-card${expanded ? " expanded" : ""}`}>
+    <article className={`entry-card universal-card${dragging === entry.id ? " dragging" : ""}${dropClass}`} draggable={dragReady} onDoubleClick={(event) => { if (!(event.target instanceof Element && event.target.closest("button, input, textarea, select, a"))) void openEditor(); }} onDragStart={(event) => { event.dataTransfer.effectAllowed = "move"; onDragStart(); }} onDragEnd={() => { setDragReady(false); onDragEnd(); }} onDragOver={(event) => { event.preventDefault(); const rect = event.currentTarget.getBoundingClientRect(); onDragPosition(event.clientY < rect.top + rect.height / 2); }} onDrop={(event) => { event.preventDefault(); setDragReady(false); onDrop(); }}>
       <div className="card-main">
-        <header className="entry-header"><div className="entry-title"><div className="entry-mark"><Icon name="lock" /></div><div><h3>{entry.title}</h3><div className="entry-meta">{entry.project && <span className="project-tag">{entry.project}</span>}<span>v{entry.revision}</span><span>{dateTime(entry.updated_at)}</span></div></div></div><div className="entry-actions"><button className="icon-button" title="Выше" onClick={() => move(-1)}><Icon name="arrowUp" /></button><button className="icon-button" title="Ниже" onClick={() => move(1)}><Icon name="arrowDown" /></button><button className="icon-button" title="Изменить" disabled={loadingEdit} onClick={edit}><Icon name="edit" /></button><button className="icon-button danger" title="Удалить" onClick={() => setDeletePending(true)}><Icon name="trash" /></button><button className="icon-button expand-button" aria-expanded={expanded} title="История ревизий" onClick={() => setExpanded(!expanded)}><Icon name="chevron" className="expand-icon" /></button></div></header>
-        <div className="field-list">{entry.fields.map((field) => <FieldValue key={field.id} entryId={entry.id} field={field} toast={toast} />)}</div>
+        <header className="entry-header"><div className="entry-title"><span className="card-ordinal">{String(index + 1).padStart(2, "0")}</span><h3>{entry.title}</h3><code className="entry-id">ID {entry.id}</code></div><div className="entry-actions"><button className="icon-button" title="Edit" disabled={loadingEdit} onClick={(event) => { event.stopPropagation(); void openEditor(); }}><Icon name="edit" /></button><button className="icon-button danger" title="Delete" onClick={() => setDeletePending(true)}><Icon name="trash" /></button><DragDots label={`Move ${entry.title}`} onPointerDown={() => setDragReady(true)} onPointerUp={() => setDragReady(false)} onKeyDown={(event) => { if (!event.altKey || !["ArrowUp", "ArrowDown"].includes(event.key)) return; event.preventDefault(); move(event.key === "ArrowUp" ? -1 : 1); }} /></div></header>
+        <div className="entry-meta">{entry.project && <span className="project-tag">{entry.project}</span>}<span>v{entry.revision}</span><span>{dateTime(entry.updated_at)}</span></div>
+        <div className="field-list">{entry.fields.map((field, index) => <FieldValue key={field.id} entryId={entry.id} field={field} position={index + 1} toast={toast} />)}</div>
       </div>
-      {expanded && <RevisionPanel entry={entry} toast={toast} onRestored={onChanged} />}
     </article>
     {editorFields && <EntryEditor entry={entry} initialFields={editorFields} toast={toast} onClose={() => setEditorFields(null)} onSaved={() => { setEditorFields(null); onChanged(); }} />}
-    {deletePending && <ConfirmDialog title={`Удалить «${entry.title}»?`} body={<p>Запись исчезнет из списка. Её зашифрованные ревизии пока сохранятся в базе.</p>} confirmLabel="Удалить" danger onClose={() => setDeletePending(false)} onConfirm={remove} />}
+    {deletePending && <ConfirmDialog title={`Move “${entry.title}” to trash?`} body={<p>The entity will leave the vault and remain recoverable for the retention period configured in Settings. After that, all encrypted revisions will be permanently erased.</p>} confirmLabel="Move to trash" danger onClose={() => setDeletePending(false)} onConfirm={remove} />}
   </>;
 }
 
@@ -321,6 +375,8 @@ export function VaultPage({ toast }: { toast: Toast }) {
   const [query, setQuery] = useState("");
   const [project, setProject] = useState("all");
   const [editor, setEditor] = useState(false);
+  const [dragging, setDragging] = useState<string | null>(null);
+  const [dropTarget, setDropTarget] = useState<{ id: string; before: boolean } | null>(null);
 
   function load() {
     setLoading(true);
@@ -330,25 +386,32 @@ export function VaultPage({ toast }: { toast: Toast }) {
 
   const projects = useMemo(() => [...new Set(entries.map((entry) => entry.project).filter(Boolean) as string[])].sort(), [entries]);
   const visible = useMemo(() => {
-    const needle = query.trim().toLocaleLowerCase("ru-RU");
-    return entries.filter((entry) => (project === "all" || entry.project === project) && (!needle || [entry.title, entry.project, ...entry.fields.flatMap((field) => [field.key, field.visibility === "plain" ? field.value : ""])].some((value) => value?.toLocaleLowerCase("ru-RU").includes(needle))));
+    const needle = query.trim().toLocaleLowerCase("en-US");
+    return entries.filter((entry) => (project === "all" || entry.project === project) && (!needle || [entry.title, entry.project, ...entry.fields.map((field) => field.visibility === "plain" ? field.value : "")].some((value) => value?.toLocaleLowerCase("en-US").includes(needle))));
   }, [entries, project, query]);
 
   async function move(id: string, direction: -1 | 1) {
     const index = entries.findIndex((entry) => entry.id === id);
-    const target = index + direction;
-    if (index < 0 || target < 0 || target >= entries.length) return;
-    const next = [...entries];
-    [next[index], next[target]] = [next[target], next[index]];
+    const next = moveItem(entries, index, direction);
+    if (next === entries) return;
     setEntries(next);
-    try { await api.reorderEntries(next.map((entry) => entry.id)); }
+    try { await api.reorderEntries(next.map((entry) => entry.id)); toast(`Entry order saved: position ${index + direction + 1}`); }
+    catch (error) { toast(errorMessage(error), "error"); load(); }
+  }
+
+  async function dropEntry(targetId: string, before: boolean) {
+    if (!dragging) return;
+    const next = dropItem(entries, entries.findIndex((entry) => entry.id === dragging), entries.findIndex((entry) => entry.id === targetId), before);
+    setDragging(null); setDropTarget(null);
+    if (next === entries) return;
+    setEntries(next);
+    try { await api.reorderEntries(next.map((entry) => entry.id)); toast(`Entry order saved: position ${next.findIndex((entry) => entry.id === dragging) + 1}`); }
     catch (error) { toast(errorMessage(error), "error"); load(); }
   }
 
   return <div className="page vault-page">
-    <section className="page-intro"><div><span className="eyebrow">ЛОКАЛЬНОЕ ХРАНИЛИЩЕ</span><h1>Записи</h1><p>Открытые и секретные значения для Kernel Register. Изменения сохраняются как новые ревизии.</p></div><button className="button" onClick={() => setEditor(true)}><Icon name="plus" />Новая запись</button></section>
-    <div className="command-bar"><label className="search"><Icon name="search" /><input aria-label="Поиск записей" value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Поиск по названию, проекту или открытому значению" /></label><select aria-label="Фильтр по проекту" value={project} onChange={(event) => setProject(event.target.value)}><option value="all">Все проекты</option>{projects.map((value) => <option key={value} value={value}>{value}</option>)}</select><span className="result-count">{visible.length} / {entries.length}</span></div>
-    {loading ? <div className="empty-state"><div className="loader" /><p>Открываем хранилище…</p></div> : visible.length ? <div className="entry-grid">{visible.map((entry) => <EntryCard key={entry.id} entry={entry} toast={toast} onChanged={load} move={(direction) => move(entry.id, direction)} />)}</div> : <div className="empty-state"><div className="empty-icon"><Icon name="vault" /></div><h2>{entries.length ? "Ничего не найдено" : "Хранилище пусто"}</h2><p>{entries.length ? "Измените запрос или фильтр проекта." : "Создайте первую запись и добавьте от одного до пяти значений."}</p>{!entries.length && <button className="button" onClick={() => setEditor(true)}><Icon name="plus" />Создать запись</button>}</div>}
+    <div className="collection-command-bar" role="search" aria-label="Search and manage entries"><label className="search"><Icon name="search" /><input aria-label="Search entries" value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Title, project, or plain value" /></label><div className="collection-information"><strong>{visible.length} / {entries.length}</strong><span>entries</span><small>Secret values are excluded from search</small></div><button className="button" onClick={() => setEditor(true)}><Icon name="plus" />New entry</button><select aria-label="Filter by project" value={project} onChange={(event) => setProject(event.target.value)}><option value="all">All projects</option>{projects.map((value) => <option key={value} value={value}>{value}</option>)}</select></div>
+    {loading ? <div className="empty-state"><div className="loader" /><p>Opening vault…</p></div> : visible.length ? <div className="entry-grid">{visible.map((entry, index) => <EntryCard key={entry.id} index={index} entry={entry} toast={toast} onChanged={load} move={(direction) => move(entry.id, direction)} dragging={dragging} dropTarget={dropTarget} onDragStart={() => setDragging(entry.id)} onDragEnd={() => { setDragging(null); setDropTarget(null); }} onDragPosition={(before) => setDropTarget({ id: entry.id, before })} onDrop={() => dropEntry(entry.id, dropTarget?.id === entry.id ? dropTarget.before : true)} />)}</div> : <div className="empty-state"><div className="empty-icon"><Icon name="vault" /></div><h2>{entries.length ? "No results" : "Vault is empty"}</h2><p>{entries.length ? "Change the query or project filter." : "Create your first entry and add between one and five values."}</p>{!entries.length && <button className="button" onClick={() => setEditor(true)}><Icon name="plus" />Create entry</button>}</div>}
     {editor && <EntryEditor entry={null} toast={toast} onClose={() => setEditor(false)} onSaved={() => { setEditor(false); load(); }} />}
   </div>;
 }
