@@ -34,6 +34,7 @@ jobs:
           secret_dir="$(mktemp -d)"
           trap 'docker rm -f volt-ci-smoke >/dev/null 2>&1 || true; rm -rf "$secret_dir"' EXIT
           printf '%s\n' 'volt-ci-access-key-only' > "$secret_dir/access.key"
+          chmod 0755 "$secret_dir"
           chmod 0444 "$secret_dir/access.key"
           docker run -d --name volt-ci-smoke \
             -e VOLT_LISTEN_HOST=0.0.0.0 \
