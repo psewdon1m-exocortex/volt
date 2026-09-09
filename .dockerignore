@@ -6,6 +6,8 @@
 !vite.config.ts
 !public/
 !public/**
+!.src/
+!.src/**
 !src/
 !src/**
 !server/

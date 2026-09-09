@@ -4,6 +4,7 @@ COPY package.json package-lock.json ./
 RUN npm ci --ignore-scripts
 COPY index.html tsconfig.json vite.config.ts ./
 COPY public ./public
+COPY .src ./.src
 COPY src ./src
 RUN npm run build
 RUN npm prune --omit=dev
