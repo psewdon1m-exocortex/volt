@@ -6,13 +6,13 @@ function request(socketPath, projectId, token, method, route, body, timeout = 30
     const payload = body == null ? null : Buffer.from(JSON.stringify(body));
     const call = http.request({
       socketPath,
-      path: `/v1/projects/${encodeURIComponent(projectId)}${route}`,
+      path: projectId ? `/v1/projects/${encodeURIComponent(projectId)}${route}` : route,
       method,
       timeout,
       headers: {
         Host: "neptune.local",
         Accept: "application/json",
-        "X-Neptune-Token": token,
+        ...(token ? { "X-Neptune-Token": token } : {}),
         ...(payload ? { "Content-Type": "application/json", "Content-Length": String(payload.length) } : {}),
       },
     }, (response) => {
@@ -51,6 +51,13 @@ export function createNeptuneClient({ socketPath, projectId, controlTokenFile })
     catch { throw Object.assign(new Error("Neptune control token is unavailable"), { status: 503 }); }
   }
   return {
+    async availability() {
+      try {
+        const health = await request(socketPath, "", "", "GET", "/v1/health", null, 3_000);
+        try { return { installed: true, linked: true, state: "linked", ...(await this.status()) }; }
+        catch { return { installed: true, linked: false, state: "unlinked", version: health.version ?? null }; }
+      } catch { return { installed: false, linked: false, state: "unavailable", version: null }; }
+    },
     status: () => request(socketPath, projectId, token(), "GET", "/status"),
     schedule: (enabled, intervalHours) => request(socketPath, projectId, token(), "PUT", "/schedule", { enabled, intervalHours }),
     run: () => request(socketPath, projectId, token(), "POST", "/runs"),

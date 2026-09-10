@@ -18,13 +18,65 @@ export type NeptuneStatus = {
   last_success_at?: string | null;
   latest_error?: string | null;
   latest_run_state?: string | null;
-  project: { enabled: boolean; interval_hours: number; next_run_at?: string | null };
+  mirror_active?: boolean;
+  project: {
+    enabled: boolean;
+    interval_hours: number;
+    next_run_at?: string | null;
+    mirror?: null | {
+      root: string;
+      mode: string;
+      enabled: boolean;
+      interval_minutes: number;
+      next_run_at?: string | null;
+    };
+  };
 };
 
 export type NeptuneUpdate = {
   installed_version: string;
   available_version?: string | null;
   update_available: boolean;
+};
+
+export type NeptuneAvailability = Partial<NeptuneStatus> & {
+  installed: boolean;
+  linked: boolean;
+  state: "linked" | "unlinked" | "unavailable";
+  version?: string | null;
+};
+
+export type NeptuneInitializationJob = {
+  id: string;
+  state: "REQUESTED" | "INSTALLING" | "ENROLLING" | "COMPLETED" | "FAILED";
+  message?: string;
+  updated_at: string;
+  finished_at?: string;
+};
+
+export type UpdateCheck = {
+  service: string;
+  repository_url: string;
+  installed_version: string;
+  available_version: string | null;
+  update_available: boolean;
+  release_url: string | null;
+  published_at: string | null;
+  backup_required: boolean;
+};
+
+export type UpdateJob = {
+  id: string;
+  request_id: string;
+  head_id: string;
+  service: string;
+  version?: string;
+  state: "REQUESTED" | "BACKUP_VERIFIED" | "ARTIFACT_VERIFIED" | "PULLING" | "APPLYING" | "HEALTH_CHECK" | "COMPLETED" | "FAILED" | "ROLLING_BACK" | "ROLLED_BACK" | "ROLLBACK_FAILED";
+  message?: string;
+  installed_version?: string;
+  rollback_available: boolean;
+  updated_at: string;
+  finished_at?: string;
 };
 
 export type InterfaceSettings = {
@@ -105,6 +157,11 @@ export const api = {
   kernelAccess: () => request<KernelStatus>("/api/v1/settings/kernel-access"),
   setKernelAccess: (update: { token?: string; url?: string }) => request<KernelStatus>("/api/v1/settings/kernel-access", { method: "PUT", body: JSON.stringify(update) }),
   updateStatus: () => request<{ installed_version: string; mechanism: string; updater: { reachable: boolean; version: string | null; error: string | null } }>("/api/v1/update/status"),
+  checkUpdate: () => request<UpdateCheck>("/api/v1/update/check", { method: "POST", body: "{}" }),
+  checkUpdaterUpdate: () => request<UpdateCheck>("/api/v1/update/updater/check", { method: "POST", body: "{}" }),
+  installUpdate: (version: string) => request<UpdateJob>("/api/v1/update/install", { method: "POST", body: JSON.stringify({ version }) }),
+  updateJob: (jobId: string) => request<UpdateJob>(`/api/v1/update/jobs/${encodeURIComponent(jobId)}`),
+  rollbackUpdate: (jobId: string) => request<UpdateJob>(`/api/v1/update/jobs/${encodeURIComponent(jobId)}/rollback`, { method: "POST", body: "{}" }),
   downloadVaultFile: async () => {
     const response = await fetch("/api/v1/vault-file", { credentials: "same-origin" });
     if (!response.ok) throw new ApiError(response.status, "VAULT_EXPORT_FAILED", "Could not create personal.volt");
@@ -132,6 +189,9 @@ export const api = {
     return request<{ restored: boolean }>("/api/v1/backup/restore", { method: "POST", body: form });
   },
   neptuneStatus: () => request<NeptuneStatus>("/api/v1/neptune/status"),
+  neptuneAvailability: () => request<NeptuneAvailability>("/api/v1/neptune/availability"),
+  initializeNeptune: (enrollmentCode: string) => request<NeptuneInitializationJob>("/api/v1/neptune/initialize", { method: "POST", body: JSON.stringify({ enrollment_code: enrollmentCode }) }),
+  neptuneInitialization: (jobId: string) => request<NeptuneInitializationJob>(`/api/v1/neptune/initializations/${encodeURIComponent(jobId)}`),
   neptuneSchedule: (enabled: boolean, intervalHours: number) => request<void>("/api/v1/neptune/schedule", { method: "PUT", body: JSON.stringify({ enabled, interval_hours: intervalHours }) }),
   neptuneRun: () => request<void>("/api/v1/neptune/runs", { method: "POST", body: "{}" }),
   neptuneCheckUpdate: () => request<NeptuneUpdate>("/api/v1/neptune/update/check", { method: "POST", body: "{}" }),

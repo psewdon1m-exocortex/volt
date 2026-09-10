@@ -1,4 +1,5 @@
 import http from "node:http";
+import { createHash, randomUUID } from "node:crypto";
 
 function request(socketPath, token, route, body, timeout, method = "POST") {
   return new Promise((resolve, reject) => {
@@ -41,7 +42,29 @@ function request(socketPath, token, route, body, timeout, method = "POST") {
 export function createUpdaterClient({ socketPath, controlToken, headId }) {
   return {
     status: () => request(socketPath, "", "/v1/health", null, 3_000, "GET"),
-    checkNeptune: (currentVersion) => request(socketPath, "", "/v1/components/neptune-linux/check", { head_id: headId, current_version: currentVersion }, 30_000),
+    createUpdate: (version, filename, backup) => {
+      const checksum = createHash("sha256").update(backup).digest("hex");
+      const requestId = createHash("sha256").update(`${headId}:${version}:${checksum}`).digest("hex");
+      return request(socketPath, controlToken, "/v1/updates", {
+        request_id: requestId,
+        head_id: headId,
+        service: "volt",
+        version,
+        backup: {
+          filename,
+          sha256: checksum,
+          data_base64: backup.toString("base64"),
+          restore_url: "/api/v1/internal/updater/restore",
+        },
+      }, 30_000);
+    },
+    job: (jobId) => request(socketPath, "", `/v1/jobs/${encodeURIComponent(jobId)}`, null, 5_000, "GET"),
+    rollback: (jobId) => request(socketPath, controlToken, `/v1/jobs/${encodeURIComponent(jobId)}/rollback`, null, 30_000),
+    checkNeptune: (currentVersion) => request(socketPath, controlToken, "/v1/components/neptune-linux/check", { head_id: headId, current_version: currentVersion }, 30_000),
     updateNeptune: (version) => request(socketPath, controlToken, "/v1/components/neptune-linux/update", { head_id: headId, version }, 300_000),
+    initializeNeptune: (enrollmentCode, exportUrl) => request(socketPath, controlToken, "/v1/components/neptune-linux/initialize", {
+      request_id: randomUUID(), head_id: headId, project_id: "volt", export_url: exportUrl, enrollment_code: enrollmentCode,
+    }, 30_000),
+    neptuneInitialization: (jobId) => request(socketPath, controlToken, `/v1/components/neptune-linux/initializations/${encodeURIComponent(jobId)}?head_id=${encodeURIComponent(headId)}`, null, 5_000, "GET"),
   };
 }

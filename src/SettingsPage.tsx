@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from "react";
 
-import { api, type InterfaceSettings, type KernelStatus, type NeptuneStatus, type NeptuneUpdate, type TrashSettings } from "./api";
+import { ApiError, api, type InterfaceSettings, type KernelStatus, type NeptuneAvailability, type NeptuneInitializationJob, type TrashSettings, type UpdateCheck, type UpdateJob } from "./api";
 import { ConfirmDialog } from "./ConfirmDialog";
 import { Icon } from "./icons";
 import type { AuditEvent } from "./types";
@@ -12,6 +12,41 @@ type DropTarget = { id: string; before: boolean } | null;
 
 function StatusRow({ label, text, ok }: { label: string; text: string; ok?: boolean }) {
   return <div className="status-row"><span>{label}</span><strong className={ok === false ? "danger-text" : ok ? "ok-text" : ""}>{text}{ok === undefined ? null : <span className={`status-square${ok ? "" : " offline"}`} />}</strong></div>;
+}
+
+const wait = (milliseconds: number) => new Promise((resolve) => window.setTimeout(resolve, milliseconds));
+
+async function waitForNeptuneInitialization(initial: NeptuneInitializationJob): Promise<NeptuneInitializationJob> {
+  let job = initial;
+  const deadline = Date.now() + 120_000;
+  while (!["COMPLETED", "FAILED"].includes(job.state) && Date.now() < deadline) {
+    await wait(1_000);
+    try { job = await api.neptuneInitialization(job.id); }
+    catch (error) {
+      if (error instanceof ApiError && error.status < 500) throw error;
+      // Volt is restarted by Updater during enrollment; transient polling failures are expected.
+    }
+  }
+  if (!["COMPLETED", "FAILED"].includes(job.state)) throw new Error("Neptune initialization is still running. Wait a moment, then refresh Settings.");
+  return job;
+}
+
+async function waitForUpdate(initial: UpdateJob, onProgress: (job: UpdateJob) => void): Promise<UpdateJob> {
+  let job = initial;
+  const terminal = ["COMPLETED", "FAILED", "ROLLED_BACK", "ROLLBACK_FAILED"];
+  const deadline = Date.now() + 5 * 60_000;
+  while (!terminal.includes(job.state) && Date.now() < deadline) {
+    await wait(1_500);
+    try {
+      job = await api.updateJob(job.id);
+      onProgress(job);
+    } catch (error) {
+      if (error instanceof ApiError && error.status < 500) throw error;
+      // The Volt container is replaced during an update, so transient disconnects are expected.
+    }
+  }
+  if (!terminal.includes(job.state)) throw new Error("Volt update is still running. Refresh Settings to continue monitoring it.");
+  return job;
 }
 
 function SettingCard({ id, index, title, description, children, dragging, dropTarget, onMove, onDragStart, onDragEnd, onDragPosition, onDrop }: {
@@ -59,27 +94,31 @@ export function SettingsPage({ settings, onSettings, onLocked, toast }: { settin
   const [inspection, setInspection] = useState<Awaited<ReturnType<typeof api.inspectBackup>> | null>(null);
   const [restorePhrase, setRestorePhrase] = useState("");
   const [restoreOpen, setRestoreOpen] = useState(false);
-  const [neptune, setNeptune] = useState<NeptuneStatus | null>(null);
-  const [neptuneUpdate, setNeptuneUpdate] = useState<NeptuneUpdate | null>(null);
-  const [neptuneInterval, setNeptuneInterval] = useState(24);
   const [version, setVersion] = useState<Awaited<ReturnType<typeof api.updateStatus>> | null>(null);
+  const [neptune, setNeptune] = useState<NeptuneAvailability | null>(null);
+  const [neptuneOpen, setNeptuneOpen] = useState(false);
+  const [neptuneCode, setNeptuneCode] = useState("");
   const [updateOpen, setUpdateOpen] = useState(false);
+  const [updateCheck, setUpdateCheck] = useState<UpdateCheck | null>(null);
+  const [updaterUpdate, setUpdaterUpdate] = useState<UpdateCheck | null>(null);
+  const [updateJob, setUpdateJob] = useState<UpdateJob | null>(null);
+  const [updateConfirmOpen, setUpdateConfirmOpen] = useState(false);
+  const [rollbackConfirmOpen, setRollbackConfirmOpen] = useState(false);
   const [logs, setLogs] = useState<AuditEvent[]>([]);
   const [busy, setBusy] = useState("");
   const [dragging, setDragging] = useState<string | null>(null);
   const [dropTarget, setDropTarget] = useState<DropTarget>(null);
 
   const loadKernel = useCallback(() => api.kernelAccess().then((value) => { setKernel(value); setKernelUrl(value.url); }).catch((error) => toast(errorMessage(error), "error")), [toast]);
-  const loadNeptune = useCallback(() => api.neptuneStatus().then((value) => { setNeptune(value); setNeptuneInterval(value.project.interval_hours); }).catch(() => setNeptune(null)), []);
   const loadLogs = useCallback(() => { if (!document.hidden) api.audit().then((value) => setLogs(value.events.slice(0, 80))).catch(() => undefined); }, []);
   useEffect(() => {
     void loadKernel();
-    void loadNeptune();
     api.updateStatus().then(setVersion).catch(() => setVersion(null));
+    api.neptuneAvailability().then(setNeptune).catch(() => setNeptune(null));
     api.trashSettings()
       .then((value) => { setTrashSettings(value); setTrashRetentionInput(String(value.retention_days)); })
       .catch((error) => toast(errorMessage(error), "error"));
-  }, [loadKernel, loadNeptune, toast]);
+  }, [loadKernel, toast]);
   useEffect(() => { loadLogs(); const timer = window.setInterval(loadLogs, 5000); document.addEventListener("visibilitychange", loadLogs); return () => { window.clearInterval(timer); document.removeEventListener("visibilitychange", loadLogs); }; }, [loadLogs]);
   useEffect(() => setAccent(settings.accent), [settings.accent]);
   useEffect(() => () => applyAccent(settings.accent), [settings.accent]);
@@ -87,6 +126,26 @@ export function SettingsPage({ settings, onSettings, onLocked, toast }: { settin
   function closeAccess() { setAccessOpen(false); setCurrentKey(""); setNewKey(""); setConfirmKey(""); }
   function closeKernel() { setKernelOpen(false); setKernelToken(""); setKernelTokenConfirm(""); }
   function closeRestore() { setRestoreOpen(false); setInspection(null); setRestoreFile(null); setRestorePhrase(""); }
+  function closeNeptune() { setNeptuneOpen(false); setNeptuneCode(""); }
+
+  async function initializeNeptune(event: React.FormEvent) {
+    event.preventDefault();
+    if (!/^[A-Za-z0-9_-]{32}$/.test(neptuneCode)) return toast("Enter the 32-character setup code from Saturn", "error");
+    setBusy("neptune-initialize");
+    try {
+      const job = await waitForNeptuneInitialization(await api.initializeNeptune(neptuneCode));
+      if (job.state === "FAILED") throw new Error(job.message || "Neptune initialization failed");
+      const availability = await api.neptuneAvailability();
+      const mirror = availability.project?.mirror;
+      if (!availability.linked || mirror?.root !== "volt" || mirror.mode !== "single-file") {
+        throw new Error("Neptune did not report both Volt backup pipelines after initialization");
+      }
+      setNeptune(availability);
+      closeNeptune();
+      toast("Recovery ZIP and personal.volt mirror are linked to Saturn.");
+    } catch (error) { toast(errorMessage(error), "error"); }
+    finally { setBusy(""); }
+  }
 
   async function saveInterface(update: Partial<InterfaceSettings>, success = "Setting saved") {
     const optimistic = { ...settings, ...update };
@@ -185,46 +244,59 @@ export function SettingsPage({ settings, onSettings, onLocked, toast }: { settin
     finally { setBusy(""); }
   }
 
-  async function toggleNeptune() {
-    if (!neptune) return;
-    setBusy("neptune");
-    try { await api.neptuneSchedule(!neptune.project.enabled, neptuneInterval); await loadNeptune(); toast(neptune.project.enabled ? "Automatic backups disabled" : "Automatic backups enabled"); }
-    catch (error) { toast(errorMessage(error), "error"); }
-    finally { setBusy(""); }
-  }
-
-  async function runNeptune() {
-    setBusy("neptune");
-    try { await api.neptuneRun(); await loadNeptune(); toast("Backup sent to Neptune"); }
-    catch (error) { toast(errorMessage(error), "error"); }
-    finally { setBusy(""); }
-  }
-
   async function checkUpdate() {
     setBusy("update");
+    setUpdateCheck(null);
     try {
-      setVersion(await api.updateStatus());
+      const [runtime, candidate] = await Promise.all([api.updateStatus(), api.checkUpdate()]);
+      setVersion(runtime);
+      setUpdateCheck(candidate);
+      toast(candidate.update_available ? `Volt ${candidate.available_version} is available` : "Volt is up to date");
     }
     catch (error) { toast(errorMessage(error), "error"); }
     finally { setBusy(""); }
   }
 
-  async function checkNeptuneUpdate() {
-    if (!neptune) return;
-    setBusy("neptune-update");
+  async function checkUpdaterUpdate() {
+    setBusy("updater-update");
+    setUpdaterUpdate(null);
     try {
-      const result = await api.neptuneCheckUpdate();
-      setNeptuneUpdate(result);
-      toast(result.update_available ? `Neptune ${result.available_version ?? "update"} is available` : "Neptune is up to date");
+      const [runtime, candidate] = await Promise.all([api.updateStatus(), api.checkUpdaterUpdate()]);
+      setVersion(runtime);
+      setUpdaterUpdate(candidate);
+      toast(candidate.update_available ? `Updater ${candidate.available_version} is available` : "Updater is up to date");
     } catch (error) { toast(errorMessage(error), "error"); }
     finally { setBusy(""); }
   }
 
-  async function installNeptuneUpdate() {
-    if (!neptuneUpdate?.available_version) return;
-    setBusy("neptune-update");
-    try { await api.neptuneInstallUpdate(neptuneUpdate.available_version); await loadNeptune(); setNeptuneUpdate(null); toast("Neptune updated"); }
-    catch (error) { toast(errorMessage(error), "error"); }
+  async function installUpdate() {
+    if (!updateCheck?.available_version) return;
+    setBusy("update-install");
+    try {
+      setUpdateConfirmOpen(false);
+      const initial = await api.installUpdate(updateCheck.available_version);
+      setUpdateJob(initial);
+      const completed = await waitForUpdate(initial, setUpdateJob);
+      if (completed.state !== "COMPLETED") throw new Error(completed.message || `Volt update ended in ${completed.state}`);
+      setVersion(await api.updateStatus());
+      setUpdateCheck(null);
+      toast(`Volt ${completed.installed_version ?? updateCheck.available_version} installed`);
+    } catch (error) { toast(errorMessage(error), "error"); }
+    finally { setBusy(""); }
+  }
+
+  async function rollbackUpdate() {
+    if (!updateJob?.id) return;
+    setBusy("update-rollback");
+    try {
+      setRollbackConfirmOpen(false);
+      const initial = await api.rollbackUpdate(updateJob.id);
+      setUpdateJob(initial);
+      const completed = await waitForUpdate(initial, setUpdateJob);
+      if (completed.state !== "ROLLED_BACK") throw new Error(completed.message || `Volt rollback ended in ${completed.state}`);
+      setVersion(await api.updateStatus());
+      toast("Volt rollback completed");
+    } catch (error) { toast(errorMessage(error), "error"); }
     finally { setBusy(""); }
   }
 
@@ -247,6 +319,9 @@ export function SettingsPage({ settings, onSettings, onLocked, toast }: { settin
     await saveInterface({ settings_order: next }, `Settings order saved: position ${next.indexOf(dragging) + 1}`);
   }
 
+  const voltMirrorConfigured = neptune?.project?.mirror?.root === "volt" && neptune.project.mirror.mode === "single-file";
+  const neptuneNeedsInitialization = neptune?.installed === true && (!neptune.linked || !voltMirrorConfigured);
+
   const sections: Record<SectionId, { title: string; eyebrow: string; description?: string; content: React.ReactNode }> = {
     appearance: { title: "Appearance", eyebrow: "APPEARANCE", description: "Accent color and sidebar position.", content: <>
       <SettingGroup className="appearance-color" title="Color correction" description="Changes appear immediately on the unlock screen and in the open vault; use Apply to save them."><div className="accent-controls"><label className="accent-swatch"><span className="accent-swatch-color" style={{ background: accent }} /><span className="visually-hidden">Choose color</span><input type="color" value={accent} onChange={(event) => { setAccent(event.target.value.toUpperCase()); applyAccent(event.target.value); }} /></label><label className="visually-hidden" htmlFor="accent-hex">HEX</label><input id="accent-hex" className="accent-hex" value={accent} pattern="#[0-9A-Fa-f]{6}" maxLength={7} onChange={(event) => { setAccent(event.target.value.toUpperCase()); if (/^#[0-9A-F]{6}$/i.test(event.target.value)) applyAccent(event.target.value); }} onKeyDown={(event) => { if (event.key === "Enter") { event.preventDefault(); void saveAccent(accent); } }} /><button className="button secondary" onClick={() => { setAccent("#00A8FF"); applyAccent("#00A8FF"); }}>Reset</button><button className="button" onClick={() => saveAccent(accent)}>Apply</button></div></SettingGroup>
@@ -260,10 +335,9 @@ export function SettingsPage({ settings, onSettings, onLocked, toast }: { settin
     backup: { title: "Backup", eyebrow: "BACKUP", description: "Portable container, ZIP snapshot, and Neptune.", content: <div className="backup-content">
       <SettingGroup title="System snapshot" description="The logical snapshot contains entries, revisions, and settings, but not server device keys."><div className="button-row"><button className="button secondary reference-action" disabled={!!busy} onClick={() => getFile("backup")}><Icon name="download" />Create and download snapshot</button><button className="button secondary portable-vault-action" disabled={!!busy} onClick={() => getFile("vault")}><Icon name="download" />Download personal.volt</button></div></SettingGroup>
       <SettingGroup title="Restore snapshot" description="The selected archive is verified first; replacement proceeds only after explicit confirmation."><button className="button secondary reference-action" disabled={!!busy} onClick={() => setRestoreOpen(true)}>Browse local snapshot archive</button></SettingGroup>
-      <SettingGroup className="backup-neptune-group" title="Automatic backup to Saturn" description="Neptune exports the same ZIP as the manual action and uploads it without changing its bytes."><StatusRow label="Local Neptune agent:" text={neptune ? "Service Reachability" : "Service Unavailable"} ok={Boolean(neptune)} /><div className="backup-schedule-controls"><div className="backup-schedule-fields"><label className="backup-toggle"><input type="checkbox" checked={neptune?.project.enabled ?? false} disabled={!neptune || !!busy} onChange={() => void toggleNeptune()} /><span>Enable automatic backups</span></label><label className="backup-interval-row"><span>Interval in hours:</span><input type="number" min={1} max={8760} value={neptuneInterval} disabled={!neptune || !!busy} onChange={(event) => setNeptuneInterval(Number(event.target.value))} /></label></div><button className="button secondary backup-run-action" disabled={!neptune || !!busy} onClick={runNeptune}>Back up to Saturn now</button></div></SettingGroup>
-      <SettingGroup className="backup-version-group" title="Neptune version"><p>Current installed version: {neptune?.version ?? "unavailable"}{neptuneUpdate?.available_version ? ` · latest ${neptuneUpdate.available_version}` : ""}</p><button className="button secondary reference-action" disabled={!neptune || !!busy} onClick={checkNeptuneUpdate}>Check Neptune for updates</button>{neptuneUpdate?.update_available && neptuneUpdate.available_version ? <button className="button secondary reference-action install-component-action" disabled={!!busy} onClick={installNeptuneUpdate}>Install Neptune {neptuneUpdate.available_version}</button> : null}</SettingGroup>
+      <SettingGroup className="backup-neptune-group" title="Automatic backup to Saturn"><p>Schedules, remote runs and Neptune fleet state are managed only from Saturn → Synchronization. Manual Volt ZIP and personal.volt downloads remain here.</p><StatusRow label="Local Neptune agent:" text={neptune?.linked ? "Linked to Saturn" : neptune?.installed ? "Detected · not linked" : "Not installed"} ok={neptune?.linked === true} />{neptune?.linked && <><StatusRow label="Recovery ZIP:" text={neptune.project ? `Configured · schedule ${neptune.project.enabled ? "enabled" : "disabled"}` : "Configuration unavailable"} ok={Boolean(neptune.project)} /><StatusRow label="personal.volt mirror:" text={voltMirrorConfigured ? `Configured · schedule ${neptune.project!.mirror!.enabled ? "enabled" : "disabled"}` : "Not configured"} ok={voltMirrorConfigured} /></>}{neptuneNeedsInitialization && <button className="button secondary reference-action" disabled={!!busy || !version?.updater.reachable} onClick={() => setNeptuneOpen(true)}>{neptune?.linked ? "Repair Neptune pipelines" : "Initialize Neptune"}</button>}</SettingGroup>
     </div> },
-    updates: { title: "Updates", eyebrow: "UPDATES", description: "Local Updater and trusted release registry.", content: <div className="updates-content"><SettingGroup className="update-pipeline-group" title="Update pipeline" description="Release discovery comes from Kernel Register; replacement and rollback are performed by the local Updater."><p className="installed-version">Current installed version: <strong>v{version?.installed_version ?? "…"}</strong></p><StatusRow label="Local Updater agent:" text={version?.updater.reachable ? "Service Reachability" : version?.updater.error ?? "Service Unavailable"} ok={version?.updater.reachable} /><StatusRow label="Kernel Register:" text={kernel?.reachable ? "Service Reachability" : kernel?.error ?? "Service Unavailable"} ok={kernel?.reachable} /><button className="button secondary reference-action update-action" disabled={!!busy} onClick={() => { setUpdateOpen(true); void checkUpdate(); }}>Check for updates</button></SettingGroup><SettingGroup className="updater-version-group" title="Updater version"><p>Current installed version: {version?.updater.version ?? "unavailable"}</p><button className="button secondary reference-action" disabled={!!busy} onClick={() => void checkUpdate().then(() => toast("Updater version status refreshed"))}>Check Updater for updates</button></SettingGroup></div> },
+    updates: { title: "Updates", eyebrow: "UPDATES", description: "Local Updater and trusted release registry.", content: <div className="updates-content"><SettingGroup className="update-pipeline-group" title="Update pipeline" description="Release discovery comes from Kernel Register; replacement and rollback are performed by the local Updater."><p className="installed-version">Current installed version: <strong>v{version?.installed_version ?? "…"}</strong></p><StatusRow label="Local Updater agent:" text={version?.updater.reachable ? "Service Reachability" : version?.updater.error ?? "Service Unavailable"} ok={version?.updater.reachable} /><StatusRow label="Kernel Register:" text={kernel?.reachable ? "Service Reachability" : kernel?.error ?? "Service Unavailable"} ok={kernel?.reachable} />{updateJob && <StatusRow label="Latest update job:" text={`${updateJob.state}${updateJob.message ? ` · ${updateJob.message}` : ""}`} ok={updateJob.state === "COMPLETED" || updateJob.state === "ROLLED_BACK" ? true : ["FAILED", "ROLLBACK_FAILED"].includes(updateJob.state) ? false : undefined} />}<button className="button secondary reference-action update-action" disabled={!!busy} onClick={() => { setUpdateOpen(true); void checkUpdate(); }}>Check for updates</button>{updateJob?.state === "COMPLETED" && updateJob.rollback_available && <button className="button secondary reference-action" disabled={!!busy} onClick={() => setRollbackConfirmOpen(true)}>Rollback latest update</button>}</SettingGroup><SettingGroup className="updater-version-group" title="Updater version"><p>Current installed version: {version?.updater.version ?? "unavailable"}{updaterUpdate?.available_version ? ` · latest ${updaterUpdate.available_version}` : ""}</p><button className="button secondary reference-action" disabled={!!busy || !version?.updater.reachable} onClick={() => void checkUpdaterUpdate()}>{busy === "updater-update" ? "Checking…" : "Check Updater for updates"}</button>{updaterUpdate?.update_available && <p className="inline-note">Run <code>sudo updater update --head volt</code> on the VPS to install Updater {updaterUpdate.available_version} safely.</p>}</SettingGroup></div> },
     logs: { title: "Logs", eyebrow: "LOGS", description: "A limited operational audit stream without secret contents.", content: <><div className="log-command-band"><p>Compact activity stream without secret values.</p><button className="button secondary" disabled={!!busy} onClick={() => getFile("logs")}><Icon name="download" />Download log archive</button></div><div className="settings-log-table"><header><span>TYPE</span><span>BODY</span><span>TIME</span></header>{logs.map((event) => <div key={event.event_id}><strong className={event.status === "success" ? "ok-text" : "danger-text"}>{event.status === "success" ? "/INFO" : "/ERROR"}</strong><span>{event.action}{event.target ? ` · ${event.target}` : ""}</span><time>{new Intl.DateTimeFormat("en-US", { timeStyle: "medium" }).format(new Date(event.created_at))}</time></div>)}</div></> },
     cryptography: { title: "Cryptography", eyebrow: "CRYPTOGRAPHY", description: "Protection model for the local container.", content: <div className="crypto-grid"><div><strong>AES-256-GCM</strong><span>Individual data key for every entry</span></div><div><strong>Argon2id</strong><span>The Access Key unlocks the portable master key</span></div><div><strong>Dual wrapping</strong><span>Offline Access Key and server device key</span></div></div> },
   };
@@ -283,6 +357,9 @@ export function SettingsPage({ settings, onSettings, onLocked, toast }: { settin
 
     {restoreOpen && <Modal title="Restore Volt" eyebrow="REPLACE RESTORE" className="narrow" dirty={Boolean(restoreFile)} onClose={closeRestore} footer={<><button className="button ghost" onClick={closeRestore}>Cancel</button><button className="button danger-button" disabled={busy === "restore" || !inspection || restorePhrase !== "RESTORE"} onClick={restore}>{busy === "restore" ? "Restoring…" : "Replace state"}</button></>}><div className="modal-body restore-body"><p>Select a trusted ZIP snapshot. After verification, all local entries, revisions, settings, and audit events will be replaced, and operator sessions will be closed. A completed restore cannot be undone; the previous state can only be recovered from a separate backup created beforehand.</p><label className="button secondary file-button align-start">Select ZIP<input data-autofocus type="file" accept=".zip,application/zip" onChange={(event) => inspect(event.target.files?.[0] ?? null)} /></label>{inspection && <><dl><div><dt>File</dt><dd>{inspection.filename}</dd></div><div><dt>Size</dt><dd>{inspection.bytes.toLocaleString("en-US")} bytes</dd></div><div><dt>Created</dt><dd>{formatDate(inspection.manifest.created_at)}</dd></div><div><dt>Version</dt><dd>{inspection.manifest.source_version}</dd></div><div><dt>Entries</dt><dd>{inspection.manifest.files["data/entries.jsonl"]?.records ?? 0}</dd></div></dl><label className="control-label">Enter RESTORE<input value={restorePhrase} onChange={(event) => setRestorePhrase(event.target.value)} /></label></>}</div></Modal>}
 
-    {updateOpen && <Modal title="Check for updates" eyebrow="UPDATES" className="narrow" dirty={busy === "update"} onClose={() => setUpdateOpen(false)} footer={<button className="button ghost" onClick={() => setUpdateOpen(false)}>Close</button>}><div className="modal-body form-grid"><StatusRow label="Volt" text={`v${version?.installed_version ?? "…"}`} /><StatusRow label="Kernel Register" text={kernel?.reachable ? "Service Reachability" : kernel?.error ?? "Service Unavailable"} ok={kernel?.reachable} /><StatusRow label="Local Updater" text={version?.updater.reachable ? `v${version.updater.version ?? "available"}` : version?.updater.error ?? "checking…"} ok={version?.updater.reachable} />{busy === "update" ? <p className="inline-note">Checking the trusted source…</p> : <p className="inline-note">Release discovery is separated from Neptune maintenance. Installation is shown only after a compatible Volt release is verified.</p>}</div></Modal>}
+    {updateOpen && <Modal title="Check for updates" eyebrow="UPDATES" className="narrow" dirty={["update", "update-install"].includes(busy)} onClose={() => setUpdateOpen(false)} footer={<><button className="button ghost" onClick={() => setUpdateOpen(false)}>Close</button>{updateCheck?.update_available && updateCheck.available_version && <button className="button" disabled={!!busy || !version?.updater.reachable} onClick={() => setUpdateConfirmOpen(true)}>Install {updateCheck.available_version}</button>}</>}><div className="modal-body form-grid"><StatusRow label="Installed Volt" text={`v${version?.installed_version ?? "…"}`} /><StatusRow label="Available Volt" text={updateCheck?.available_version ? `v${updateCheck.available_version}` : updateCheck ? "No newer release" : "Checking…"} ok={updateCheck ? !updateCheck.update_available : undefined} /><StatusRow label="Kernel Register" text={kernel?.reachable ? "Service Reachability" : kernel?.error ?? "Service Unavailable"} ok={kernel?.reachable} /><StatusRow label="Local Updater" text={version?.updater.reachable ? `v${version.updater.version ?? "available"}` : version?.updater.error ?? "checking…"} ok={version?.updater.reachable} />{updateCheck?.release_url && <a href={updateCheck.release_url} target="_blank" rel="noreferrer">Open release notes</a>}{busy === "update" ? <p className="inline-note">Checking the trusted source…</p> : <p className="inline-note">Updater verifies the release manifest, archive checksum and immutable image digest, creates a logical backup, checks health and rolls back automatically on failure.</p>}</div></Modal>}
+    {updateConfirmOpen && updateCheck?.available_version && <ConfirmDialog title="Install Volt update?" body={<p>Volt {updateCheck.available_version} will be verified and installed. Persistent data is preserved, and a checksummed logical backup is retained for automatic rollback.</p>} confirmLabel={`Install ${updateCheck.available_version}`} busy={busy === "update-install"} onClose={() => setUpdateConfirmOpen(false)} onConfirm={() => void installUpdate()} />}
+    {rollbackConfirmOpen && updateJob && <ConfirmDialog title="Rollback Volt update?" body={<p>Volt will return to the previous image and replace its logical state with the pre-update backup. Changes made after the update will be lost.</p>} confirmLabel="Rollback and restore backup" busy={busy === "update-rollback"} danger onClose={() => setRollbackConfirmOpen(false)} onConfirm={() => void rollbackUpdate()} />}
+    {neptuneOpen && <Modal title="Initialize Neptune" eyebrow="BACKUP" className="narrow" dirty={Boolean(neptuneCode)} onClose={closeNeptune} footer={<><button className="button ghost" type="button" disabled={busy === "neptune-initialize"} onClick={closeNeptune}>Cancel</button><button className="button" form="neptune-form" disabled={busy === "neptune-initialize"}>{busy === "neptune-initialize" ? "Linking both pipelines…" : "Initialize"}</button></>}><form id="neptune-form" className="modal-body form-grid" onSubmit={initializeNeptune}><p className="inline-note">In Saturn → Synchronization choose <strong>Volt ZIP + personal.volt mirror</strong>, create its one-time setup code and paste it here. Archive-only and other service codes are rejected. Volt may briefly reconnect while Updater configures both pipelines.</p><label className="control-label">Volt dual-pipeline setup code<input data-autofocus value={neptuneCode} onChange={(event) => setNeptuneCode(event.target.value.trim())} minLength={32} maxLength={32} autoComplete="off" required /></label></form></Modal>}
   </>;
 }

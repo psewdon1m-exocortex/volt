@@ -19,12 +19,52 @@ jobs:
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version: "24"
+          cache: npm
       - name: Tests, typecheck, build and dependency audit
+        run: npm ci --ignore-scripts && npm audit --omit=dev --audit-level=high && npm run check
+      - name: Syntax and release contract checks
+        shell: bash
         run: |
-          docker run --rm \
-            -v "$PWD:/workspace" -w /workspace \
-            node:24-bookworm-slim@sha256:6f7b03f7c2c8e2e784dcf9295400527b9b1270fd37b7e9a7285cf83b6951452d \
-            sh -eu -c 'npm ci --ignore-scripts && npm audit --omit=dev --audit-level=high && npm run check'
+          set -euo pipefail
+          find server scripts tests -type f \( -name '*.js' -o -name '*.mjs' \) -print0 | xargs -0 -n1 node --check
+          sh -n install.sh
+          sh -n scripts/bootstrap.sh
+          bash -n scripts/build-release.sh
+          rm -rf release-artifacts-ci
+          updater_bundle="$RUNNER_TEMP/volt-ci-updater/updater"
+          mkdir -p "$updater_bundle/systemd"
+          install -m 0755 /dev/null "$updater_bundle/install.sh"
+          install -m 0755 /dev/null "$updater_bundle/updater-linux-amd64"
+          install -m 0644 /dev/null "$updater_bundle/systemd/updater.service"
+          updater_version="$(tr -d '[:space:]' < .release/updater.version)"
+          GITHUB_REPOSITORY="$GITHUB_REPOSITORY" \
+            IMAGE_REFERENCE="ghcr.io/${GITHUB_REPOSITORY,,}" \
+            IMAGE_DIGEST="sha256:$(printf 'a%.0s' {1..64})" \
+            UPDATER_BUNDLE_DIR="$updater_bundle" \
+            UPDATER_BUNDLE_VERSION="$updater_version" \
+            bash scripts/build-release.sh 0.0.0-ci release-artifacts-ci
+          node scripts/verify-release.mjs release-artifacts-ci/volt-release.json
+          (cd release-artifacts-ci && sha256sum -c volt-0.0.0-ci-compose.tar.gz.sha256)
+      - name: Validate production Compose
+        shell: bash
+        run: |
+          set -euo pipefail
+          cp .env.example .ci.env
+          sed -i \
+            -e 's|^KERNEL_URL=.*|KERNEL_URL=https://kernel.example.test|' \
+            -e 's|^KERNEL_SERVICE_TOKEN=.*|KERNEL_SERVICE_TOKEN=ci-kernel-service-token|' \
+            -e 's|^VOLT_ACCESS_KEY=.*|VOLT_ACCESS_KEY=ci-access-key-strong|' \
+            -e 's|^VOLT_IMAGE=.*|VOLT_IMAGE=ghcr.io/example/volt@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa|' \
+            -e 's|^VOLT_SECRETS_GID=.*|VOLT_SECRETS_GID=1000|' \
+            -e 's|^NEPTUNE_SOCKET_GID=.*|NEPTUNE_SOCKET_GID=1001|' \
+            -e 's|^UPDATER_SOCKET_GID=.*|UPDATER_SOCKET_GID=1002|' \
+            -e 's|^UPDATER_CONTROL_TOKEN=.*|UPDATER_CONTROL_TOKEN=ci-updater-control-token-32-characters|' \
+            .ci.env
+          docker compose --env-file .ci.env -f compose.production.yaml config --quiet
+          ! docker compose --env-file .ci.env -f compose.production.yaml config | grep -q 'CHANGE_ME'
       - name: Build exact container candidate
         run: docker build --tag exocortex-volt-ci:${{ github.sha }} .
       - name: Container health smoke test

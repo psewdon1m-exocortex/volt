@@ -26,6 +26,11 @@ mutation policy. Machine endpoint принимает только общий Bea
 | `PUT` | `/api/v1/settings/access-key` | Смена по `{ current_access_key, new_access_key }` с закрытием сессий |
 | `GET/PUT` | `/api/v1/settings/kernel-access` | URL, reachability и замена общего Kernel token; значение не возвращается |
 | `GET` | `/api/v1/update/status` | Установленная версия и доступность локального Updater |
+| `POST` | `/api/v1/update/check` | Проверка `repositories.volt.url` через Kernel Register |
+| `POST` | `/api/v1/update/install` | Backup и запуск проверенной установки через локальный Updater |
+| `GET` | `/api/v1/update/jobs/:id` | Состояние сохранённого updater job |
+| `POST` | `/api/v1/update/jobs/:id/rollback` | Ручной rollback завершённого обновления |
+| `POST` | `/api/v1/update/updater/check` | Проверка `repositories.updater.url` |
 | `GET` | `/api/v1/logs/archive` | ZIP с redacted audit в JSONL |
 | `GET` | `/api/v1/vault-file` | Согласованный переносимый `personal.volt` snapshot |
 | `GET` | `/api/v1/vault-file/info` | Версия формата, vault ID и параметры KDF без секретов |
@@ -64,3 +69,11 @@ Volt не ведёт principals или grants: этот endpoint доступе�
 `resolution_revision` зависит от ссылок и номеров ревизий, но не от значений.
 `visibility` имеет значение `plain` или `secret` и позволяет Kernel сохранить
 корректную метку в ответе, не меняя общий путь разрешения.
+
+## Updater restore
+
+`POST /api/v1/internal/updater/restore` принимает только multipart ZIP в поле
+`file` и отдельный `X-Updater-Token`. Endpoint не использует operator cookie и
+предназначен исключительно для автоматического восстановления после неудачного
+health check. Control token генерируется установщиком, хранится в root-owned
+`.env` для host updater и монтируется в Volt отдельным read-only secret-файлом.

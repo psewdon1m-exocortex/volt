@@ -9,6 +9,7 @@ import multer from "multer";
 
 import { buildBackupArchive, MAX_COMPRESSED_BYTES, parseBackupArchive } from "./backup.js";
 import { generateValue } from "./generators.js";
+import { checkRegisteredRelease } from "./release-client.js";
 import {
   createSessionToken,
   hashAccessKey,
@@ -79,7 +80,26 @@ async function probeKernel(url) {
   }
 }
 
-export function createApp({ store, sessionKey, accessKey, kernelToken, kernelUrlSeed = "http://127.0.0.1:18180", appVersion = "0.1.0", secureCookies = false, trustProxy = false, distDir = null, neptuneClient = null, updaterClient = null, neptuneExportTokenFile = null }) {
+export function createApp({
+  store,
+  sessionKey,
+  accessKey,
+  kernelToken,
+  kernelUrlSeed = "http://127.0.0.1:18180",
+  kernelServiceUrl = "",
+  kernelServiceToken = "",
+  appVersion = "0.1.0",
+  secureCookies = false,
+  trustProxy = false,
+  distDir = null,
+  neptuneClient = null,
+  updaterClient = null,
+  updaterControlToken = "",
+  neptuneExportTokenFile = null,
+  neptuneExportUrl = "http://127.0.0.1:18184/api/v1/internal/neptune/backup",
+  releaseFetch = globalThis.fetch,
+  updateCheckTimeoutMs = 5_000,
+}) {
   const app = express();
   app.disable("x-powered-by");
   if (trustProxy) app.set("trust proxy", trustProxy);
@@ -166,6 +186,26 @@ export function createApp({ store, sessionKey, accessKey, kernelToken, kernelUrl
     }
     next();
   }
+
+  function requireUpdater(request, _response, next) {
+    const supplied = request.get("X-Updater-Token") ?? "";
+    const expected = updaterControlToken ?? "";
+    const authorized = supplied.length === expected.length
+      && supplied.length > 0
+      && timingSafeEqual(Buffer.from(supplied), Buffer.from(expected));
+    if (!authorized) return next(domainError(401, "UPDATER_UNAUTHORIZED", "A valid Updater token is required"));
+    next();
+  }
+
+  const checkRelease = (service, currentVersion) => checkRegisteredRelease({
+    kernelUrl: kernelServiceUrl,
+    kernelServiceToken,
+    service,
+    currentVersion,
+    version: appVersion,
+    fetchImpl: releaseFetch,
+    timeoutMs: updateCheckTimeoutMs,
+  });
 
   app.get("/api/v1/health", (_request, response) => {
     response.json({ status: "ok", service: "volt", schema: "volt.health.v1" });
@@ -267,6 +307,15 @@ export function createApp({ store, sessionKey, accessKey, kernelToken, kernelUrl
       });
       next(error);
     }
+  });
+
+  app.post("/api/v1/internal/updater/restore", requireUpdater, backupUpload.single("file"), (request, response, next) => {
+    try {
+      if (!request.file) throw domainError(400, "BACKUP_REQUIRED", "Updater did not provide a Volt backup ZIP");
+      const inspected = parseBackupArchive(request.file.buffer);
+      const result = store.importLogicalState(inspected.state, { actor: "service:updater", archiveDigest: inspected.digest });
+      response.json({ restored: true, ...result });
+    } catch (error) { next(error); }
   });
 
   app.use("/api/v1", requireOperator);
@@ -374,6 +423,56 @@ export function createApp({ store, sessionKey, accessKey, kernelToken, kernelUrl
       updater,
     });
   });
+  app.post("/api/v1/update/check", requireSameOrigin, async (_request, response, next) => {
+    try {
+      const result = await checkRelease("volt", appVersion);
+      store.audit({ actor: "operator", action: "updater.check", target: result.available_version ?? appVersion, details: { update_available: result.update_available } });
+      response.json(result);
+    } catch (error) {
+      store.audit({ actor: "operator", action: "updater.check", status: "error", details: { code: error.code ?? "RELEASE_DISCOVERY_FAILED" } });
+      next(error);
+    }
+  });
+  app.post("/api/v1/update/updater/check", requireSameOrigin, async (_request, response, next) => {
+    try {
+      if (!updaterClient) throw domainError(503, "UPDATER_NOT_CONFIGURED", "Updater is not configured");
+      const status = await updaterClient.status();
+      if (!status.version) throw domainError(503, "UPDATER_UNAVAILABLE", "Updater did not report its installed version");
+      response.json(await checkRelease("updater", status.version));
+    } catch (error) { next(error); }
+  });
+  app.post("/api/v1/update/install", requireSameOrigin, async (request, response, next) => {
+    try {
+      if (!updaterClient) throw domainError(503, "UPDATER_NOT_CONFIGURED", "Updater is not configured");
+      const version = String(request.body?.version ?? "");
+      if (!/^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/.test(version)) throw domainError(400, "RELEASE_VERSION_INVALID", "Select a valid Volt release version");
+      const candidate = await checkRelease("volt", appVersion);
+      if (!candidate.update_available || candidate.available_version !== version) {
+        throw domainError(409, "RELEASE_CHANGED", "Requested Volt version is not the current upgrade candidate");
+      }
+      const backup = Buffer.from(buildBackupArchive(store.exportLogicalState(), appVersion));
+      const stamp = new Date().toISOString().replace(/[-:TZ.]/g, "").slice(0, 14);
+      const job = await updaterClient.createUpdate(version, `volt-pre-update-${stamp}.zip`, backup);
+      store.audit({ actor: "operator", action: "updater.install", target: version, details: { job_id: job.id ?? null } });
+      response.status(202).json(job);
+    } catch (error) { next(error); }
+  });
+  app.get("/api/v1/update/jobs/:jobId", async (request, response, next) => {
+    try {
+      if (!updaterClient) throw domainError(503, "UPDATER_NOT_CONFIGURED", "Updater is not configured");
+      const jobId = String(request.params.jobId ?? "");
+      if (!/^[A-Za-z0-9-]{1,80}$/.test(jobId)) throw domainError(400, "UPDATE_JOB_INVALID", "Update job ID is invalid");
+      response.json(await updaterClient.job(jobId));
+    } catch (error) { next(error); }
+  });
+  app.post("/api/v1/update/jobs/:jobId/rollback", requireSameOrigin, async (request, response, next) => {
+    try {
+      if (!updaterClient) throw domainError(503, "UPDATER_NOT_CONFIGURED", "Updater is not configured");
+      const jobId = String(request.params.jobId ?? "");
+      if (!/^[A-Za-z0-9-]{1,80}$/.test(jobId)) throw domainError(400, "UPDATE_JOB_INVALID", "Update job ID is invalid");
+      response.status(202).json(await updaterClient.rollback(jobId));
+    } catch (error) { next(error); }
+  });
   app.get("/api/v1/settings/interface", (_request, response) => response.json(store.getInterfaceSettings()));
   app.put("/api/v1/settings/interface", requireSameOrigin, (request, response, next) => {
     try {
@@ -461,6 +560,27 @@ export function createApp({ store, sessionKey, accessKey, kernelToken, kernelUrl
     try {
       if (!neptuneClient) throw domainError(503, "NEPTUNE_NOT_CONFIGURED", "Neptune is not configured");
       response.json(await neptuneClient.status());
+    } catch (error) { next(error); }
+  });
+  app.get("/api/v1/neptune/availability", async (_request, response, next) => {
+    try { response.json(await neptuneClient.availability()); } catch (error) { next(error); }
+  });
+  app.post("/api/v1/neptune/initialize", requireSameOrigin, async (request, response, next) => {
+    try {
+      const code = String(request.body?.enrollment_code ?? "").trim();
+      if (!/^[A-Za-z0-9_-]{32}$/.test(code)) throw domainError(400, "NEPTUNE_CODE_INVALID", "Enter a valid 32-character Saturn setup code");
+      if (!updaterClient) throw domainError(503, "UPDATER_NOT_CONFIGURED", "Updater is not configured");
+      const job = await updaterClient.initializeNeptune(code, neptuneExportUrl);
+      store.audit({ actor: "operator", action: "neptune.initialize", target: String(job.id ?? "accepted") });
+      response.status(202).json(job);
+    } catch (error) { next(error); }
+  });
+  app.get("/api/v1/neptune/initializations/:jobId", async (request, response, next) => {
+    try {
+      if (!updaterClient) throw domainError(503, "UPDATER_NOT_CONFIGURED", "Updater is not configured");
+      const jobId = String(request.params.jobId ?? "");
+      if (!/^neptune-[0-9]+-[a-f0-9]{16}$/.test(jobId)) throw domainError(400, "NEPTUNE_JOB_INVALID", "Neptune initialization job ID is invalid");
+      response.json(await updaterClient.neptuneInitialization(jobId));
     } catch (error) { next(error); }
   });
   app.put("/api/v1/neptune/schedule", requireSameOrigin, async (request, response, next) => {

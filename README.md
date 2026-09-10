@@ -3,6 +3,18 @@
 Volt — локальное зашифрованное хранилище Exocortex и единственный источник значений
 для ссылок `volt://<entry-id>/<value-position>` в Kernel Register.
 
+Production-релиз включает Compose-конфигурацию и pinned-версию локального
+Updater. Проверенный bootstrap размещает их в `/opt/volt`, создаёт
+root-owned secret-файлы, control token и socket groups и регистрирует `head=volt`.
+Если Kernel установлен на том же VPS, его URL и service token импортируются
+автоматически. Вручную задаются только Access Key и удалённые Kernel credentials,
+когда локального Kernel нет.
+
+После установки можно создать в Saturn pipeline **Volt ZIP + personal.volt
+mirror**. Если Neptune уже установлен, введите setup code через Settings → Backup
+→ **Initialize Neptune**. `sudo volt-install backup` остаётся резервным
+CLI-сценарием. Расписания задаются только в Saturn → Synchronization.
+
 ## Что реализовано
 
 - записи с названием, необязательным проектом и 1–5 именованными значениями;
@@ -92,6 +104,28 @@ grants. Старые `VOLT_SERVICE_TOKEN` после обновления бол
 сделайте обычную резервную копию перед согласованным обновлением Volt, Kernel и
 потребляющих сервисов.
 
+## Production-установка и обновления
+
+Скачайте `bootstrap.sh` из GitHub Release и укажите ту же версию релиза:
+
+```bash
+sudo sh bootstrap.sh --version 0.1.0
+sudoedit /opt/volt/.env
+sudo volt-install
+```
+
+Bootstrap проверяет SHA-256 архива до распаковки. В release bundle уже находятся
+зафиксированные binary/unit/installer Updater; установщик не скачивает
+исполняемый файл во время привилегированного шага и не требует вручную создавать
+`UPDATER_CONTROL_TOKEN`, GID или token-файлы. Повторный `sudo volt-install`
+сохраняет существующие секреты и данные.
+
+Settings → Updates получает `repositories.volt.url` и
+`repositories.updater.url` через Kernel Register. При установке релиза Volt
+создаётся зашифрованный logical backup, после чего Updater проверяет manifest,
+checksum и immutable image digest, пересоздаёт только контейнер Volt и выполняет
+health check. При ошибке он возвращает предыдущий image и импортирует backup.
+
 ## Подключение через Kernel
 
 1. Создайте запись и нужное поле в Volt.
@@ -123,11 +157,14 @@ Settings позволяет скачать согласованный snapshot `
 Этот же builder доступен Neptune через loopback-only endpoint
 `POST /api/v1/internal/neptune/backup`, защищённый отдельным bearer token.
 Поэтому ручной ZIP и ZIP, отправленный автоматически в Saturn, полностью
-взаимозаменяемы. В Settings можно включить расписание, задать интервал в часах,
-запустить отправку в Saturn и проверить/установить версию Neptune. Для
-регистрации проекта у Linux-агента используются `project_id=volt`, exporter
+взаимозаменяемы. Settings показывает локальный статус Neptune и позволяет
+инициализировать или восстановить обязательную пару pipeline: recovery ZIP и
+single-file mirror `personal.volt`. Расписания, явные remote runs и fleet update
+задаются только в Saturn → Synchronization. Для регистрации archive worker
+используются `project_id=volt`, exporter
 `http://127.0.0.1:18184/api/v1/internal/neptune/backup` и Register key
-`services.volt.backup.saturn_slug`.
+`services.volt.backup.saturn_slug`; mirror worker отдельно использует
+`mirrorRoot=volt`, `mode=single-file` и `targetFilename=personal.volt`.
 
 ## Проверка
 

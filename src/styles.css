@@ -228,6 +228,8 @@ h1, h2, h3, h4, p { margin-top: 0; }
 .backup-content .backup-neptune-group { margin-top: 40px; }
 .backup-content .backup-version-group { margin-top: 48px; }
 .backup-content .backup-neptune-group .setting-group-content { margin-top: 18px; }
+.backup-neptune-group .status-row + .status-row { margin-top: 12px; }
+.backup-neptune-group .reference-action { margin-top: 20px; }
 .backup-schedule-controls { display: grid; grid-template-columns: 240px 342px; align-items: stretch; gap: 38px; margin-top: 23px; }
 .backup-schedule-fields { display: grid; align-content: space-between; gap: 14px; }
 .backup-toggle { min-height: 20px; display: flex; flex-direction: row; align-items: center; gap: 12px; color: var(--white); }

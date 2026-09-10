@@ -6,9 +6,111 @@ import path from "node:path";
 import test from "node:test";
 
 import { createApp } from "../server/app.js";
+import { parseBackupArchive } from "../server/backup.js";
 import { deriveSessionKey } from "../server/crypto.js";
 import { VoltStore } from "../server/store.js";
 import { createPortableVault, unlockPortableVault } from "../server/vault-file.js";
+
+test("Volt release discovery, updater install, job control and rollback restore use the registered head contract", async (context) => {
+  const directory = mkdtempSync(path.join(os.tmpdir(), "volt-updater-test-"));
+  const masterKey = randomBytes(32);
+  const store = new VoltStore({ filename: path.join(directory, "volt.sqlite"), masterKey });
+  const calls = [];
+  let submitted = null;
+  const completedJob = {
+    id: "1700000000-0123456789abcdef",
+    request_id: "request-1",
+    head_id: "volt",
+    service: "volt",
+    version: "0.2.0",
+    state: "COMPLETED",
+    rollback_available: true,
+    updated_at: new Date().toISOString(),
+  };
+  const updaterClient = {
+    status: async () => ({ status: "ok", service: "updater", version: "0.3.0" }),
+    createUpdate: async (version, filename, backup) => {
+      submitted = { version, filename, backup };
+      return { ...completedJob, state: "REQUESTED" };
+    },
+    job: async (id) => { assert.equal(id, completedJob.id); return completedJob; },
+    rollback: async (id) => { assert.equal(id, completedJob.id); return { ...completedJob, state: "ROLLING_BACK" }; },
+  };
+  const releaseFetch = async (url, init) => {
+    calls.push({ url: String(url), init });
+    if (String(url).endsWith("/api/v1/register/resolve")) {
+      const key = JSON.parse(init.body).keys[0];
+      return new Response(JSON.stringify({
+        schema: "exocortex.register.resolution.v1",
+        values: { [key]: { value: `https://github.com/example/${key.endsWith("updater.url") ? "updater" : "volt"}` } },
+      }));
+    }
+    return new Response(JSON.stringify([{
+      tag_name: String(url).includes("/updater/") ? "updater-v0.4.0" : "volt-v0.2.0",
+      draft: false,
+      prerelease: false,
+      html_url: "https://github.com/example/volt/releases/tag/volt-v0.2.0",
+      published_at: "2026-09-10T00:00:00Z",
+    }]));
+  };
+  const app = createApp({
+    store,
+    sessionKey: deriveSessionKey(masterKey),
+    accessKey: "correct horse battery staple",
+    appVersion: "0.1.0",
+    kernelServiceUrl: "https://kernel.example.com",
+    kernelServiceToken: "kernel-service-token",
+    updaterClient,
+    updaterControlToken: "updater-control-token",
+    releaseFetch,
+  });
+  const server = app.listen(0, "127.0.0.1");
+  await new Promise((resolve) => server.once("listening", resolve));
+  const address = server.address();
+  const base = `http://127.0.0.1:${address.port}`;
+  context.after(async () => {
+    await new Promise((resolve) => server.close(resolve));
+    store.close();
+    rmSync(directory, { recursive: true, force: true });
+  });
+
+  const unlocked = await fetch(`${base}/api/v1/session`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ access_key: "correct horse battery staple" }) });
+  const cookie = unlocked.headers.getSetCookie()[0].split(";")[0];
+  const checked = await fetch(`${base}/api/v1/update/check`, { method: "POST", headers: { cookie, "content-type": "application/json" }, body: "{}" });
+  assert.equal(checked.status, 200);
+  assert.deepEqual(await checked.json(), {
+    service: "volt",
+    repository_url: "https://github.com/example/volt",
+    installed_version: "0.1.0",
+    available_version: "0.2.0",
+    update_available: true,
+    release_url: "https://github.com/example/volt/releases/tag/volt-v0.2.0",
+    published_at: "2026-09-10T00:00:00Z",
+    backup_required: true,
+  });
+  assert.equal(calls[0].init.headers.Authorization, "Bearer kernel-service-token");
+  assert.deepEqual(JSON.parse(calls[0].init.body), { keys: ["repositories.volt.url"] });
+
+  const installed = await fetch(`${base}/api/v1/update/install`, { method: "POST", headers: { cookie, "content-type": "application/json" }, body: JSON.stringify({ version: "0.2.0" }) });
+  assert.equal(installed.status, 202);
+  assert.equal(submitted.version, "0.2.0");
+  assert.match(submitted.filename, /^volt-pre-update-\d{14}\.zip$/);
+  assert.equal(parseBackupArchive(submitted.backup).manifest.source_version, "0.1.0");
+
+  assert.equal((await fetch(`${base}/api/v1/update/jobs/${completedJob.id}`, { headers: { cookie } })).status, 200);
+  assert.equal((await fetch(`${base}/api/v1/update/jobs/${completedJob.id}/rollback`, { method: "POST", headers: { cookie, "content-type": "application/json" }, body: "{}" })).status, 202);
+  const updaterChecked = await fetch(`${base}/api/v1/update/updater/check`, { method: "POST", headers: { cookie, "content-type": "application/json" }, body: "{}" });
+  assert.equal((await updaterChecked.json()).available_version, "0.4.0");
+
+  const restoreForm = new FormData();
+  restoreForm.append("file", new Blob([submitted.backup], { type: "application/zip" }), "volt-backup.zip");
+  assert.equal((await fetch(`${base}/api/v1/internal/updater/restore`, { method: "POST", headers: { "X-Updater-Token": "wrong" }, body: restoreForm })).status, 401);
+  const acceptedForm = new FormData();
+  acceptedForm.append("file", new Blob([submitted.backup], { type: "application/zip" }), "volt-backup.zip");
+  const restored = await fetch(`${base}/api/v1/internal/updater/restore`, { method: "POST", headers: { "X-Updater-Token": "updater-control-token" }, body: acceptedForm });
+  assert.equal(restored.status, 200);
+  assert.equal((await restored.json()).restored, true);
+});
 
 test("Neptune exports the exact manual archive format and keeps controls behind operator auth", async (context) => {
   const directory = mkdtempSync(path.join(os.tmpdir(), "volt-neptune-test-"));
@@ -51,6 +153,50 @@ test("Neptune exports the exact manual archive format and keeps controls behind 
   const response = await fetch(`${base}/api/v1/neptune/schedule`, { method: "PUT", headers: { cookie, "content-type": "application/json" }, body: JSON.stringify({ enabled: true, interval_hours: 6 }) });
   assert.equal(response.status, 204);
   assert.deepEqual(scheduled, { enabled: true, intervalHours: 6 });
+});
+
+test("Volt initialization proxies and verifies the dual Neptune pipeline job", async (context) => {
+  const directory = mkdtempSync(path.join(os.tmpdir(), "volt-neptune-initialize-test-"));
+  const masterKey = randomBytes(32);
+  const store = new VoltStore({ filename: path.join(directory, "volt.sqlite"), masterKey });
+  const job = {
+    id: "neptune-1-0123456789abcdef", state: "COMPLETED",
+    updated_at: new Date().toISOString(),
+  };
+  let submittedCode = null;
+  const updaterClient = {
+    initializeNeptune: async (code) => { submittedCode = code; return { ...job, state: "REQUESTED" }; },
+    neptuneInitialization: async (id) => { assert.equal(id, job.id); return job; },
+  };
+  const neptuneClient = {
+    availability: async () => ({
+      installed: true, linked: true, state: "linked", version: "1.2.3",
+      project: { enabled: true, interval_hours: 24, mirror: { root: "volt", mode: "single-file", enabled: true, interval_minutes: 5 } },
+    }),
+  };
+  const app = createApp({ store, sessionKey: deriveSessionKey(masterKey), accessKey: "correct horse battery staple", neptuneClient, updaterClient });
+  const server = app.listen(0, "127.0.0.1");
+  await new Promise((resolve) => server.once("listening", resolve));
+  const address = server.address();
+  const base = `http://127.0.0.1:${address.port}`;
+  context.after(async () => {
+    await new Promise((resolve) => server.close(resolve));
+    store.close();
+    rmSync(directory, { recursive: true, force: true });
+  });
+
+  const unlocked = await fetch(`${base}/api/v1/session`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ access_key: "correct horse battery staple" }) });
+  const cookie = unlocked.headers.getSetCookie()[0].split(";")[0];
+  const enrollmentCode = "01234567890123456789012345678901";
+  const started = await fetch(`${base}/api/v1/neptune/initialize`, { method: "POST", headers: { cookie, "content-type": "application/json" }, body: JSON.stringify({ enrollment_code: enrollmentCode }) });
+  assert.equal(started.status, 202);
+  assert.equal(submittedCode, enrollmentCode);
+
+  const status = await fetch(`${base}/api/v1/neptune/initializations/${job.id}`, { headers: { cookie } });
+  assert.equal(status.status, 200);
+  assert.equal((await status.json()).state, "COMPLETED");
+  const availability = await fetch(`${base}/api/v1/neptune/availability`, { headers: { cookie } });
+  assert.equal((await availability.json()).project.mirror.root, "volt");
 });
 
 test("operator and machine APIs keep list responses masked", async (context) => {

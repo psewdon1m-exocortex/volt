@@ -60,6 +60,8 @@ const app = createApp({
   accessKey,
   appVersion,
   kernelUrlSeed: process.env.VOLT_KERNEL_URL || "http://127.0.0.1:18180",
+  kernelServiceUrl: process.env.KERNEL_URL || "",
+  kernelServiceToken: process.env.KERNEL_SERVICE_TOKEN || "",
   kernelToken,
   secureCookies: process.env.VOLT_SECURE_COOKIES === "true",
   trustProxy: process.env.VOLT_TRUST_PROXY === "true" ? 1 : false,
@@ -72,9 +74,11 @@ const app = createApp({
   updaterClient: createUpdaterClient({
     socketPath: process.env.UPDATER_SOCKET_PATH || "/run/exocortex/updater.sock",
     controlToken: updaterControlToken,
-    headId: process.env.UPDATER_REGISTERED_HEAD_ID || "volt-production",
+    headId: process.env.UPDATER_HEAD_ID || process.env.UPDATER_REGISTERED_HEAD_ID || "volt",
   }),
+  updaterControlToken,
   neptuneExportTokenFile: process.env.NEPTUNE_EXPORT_TOKEN_FILE,
+  neptuneExportUrl: `http://127.0.0.1:${port}/api/v1/internal/neptune/backup`,
 });
 
 const server = app.listen(port, host, () => {

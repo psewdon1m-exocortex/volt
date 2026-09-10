@@ -18,12 +18,15 @@ services:
       VOLT_TRUST_PROXY: "${VOLT_TRUST_PROXY:-true}"
       VOLT_AUDIT_RETENTION: "${VOLT_AUDIT_RETENTION:-10000}"
       VOLT_KERNEL_URL: "${VOLT_KERNEL_URL:-http://host.docker.internal:18180}"
+      KERNEL_URL: "${KERNEL_URL:?Set KERNEL_URL in .env}"
+      KERNEL_SERVICE_TOKEN: "${KERNEL_SERVICE_TOKEN:?Set KERNEL_SERVICE_TOKEN in .env}"
       NEPTUNE_SOCKET_PATH: /run/neptune/neptuned.sock
       NEPTUNE_PROJECT_ID: "${NEPTUNE_PROJECT_ID:-volt}"
       NEPTUNE_CONTROL_TOKEN_FILE: /run/secrets/neptune-control-token
       NEPTUNE_EXPORT_TOKEN_FILE: /run/secrets/neptune-export-token
       UPDATER_SOCKET_PATH: /run/exocortex/updater.sock
-      UPDATER_REGISTERED_HEAD_ID: "${UPDATER_REGISTERED_HEAD_ID:-volt-production}"
+      UPDATER_HEAD_ID: "${UPDATER_HEAD_ID:-volt}"
+      UPDATER_REGISTERED_HEAD_ID: "${UPDATER_REGISTERED_HEAD_ID:-volt}"
       UPDATER_CONTROL_TOKEN_FILE: /run/secrets/updater-control-token
     volumes:
       - volt-data:/app/data
@@ -54,6 +57,7 @@ services:
         target: /run/secrets/updater-control-token
         read_only: true
     group_add:
+      - "${VOLT_SECRETS_GID:?Set VOLT_SECRETS_GID during VPS installation}"
       - "${NEPTUNE_SOCKET_GID:?Set NEPTUNE_SOCKET_GID during Neptune installation}"
       - "${UPDATER_SOCKET_GID:?Set UPDATER_SOCKET_GID during VPS installation}"
     read_only: true
