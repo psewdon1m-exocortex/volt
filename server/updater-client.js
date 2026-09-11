@@ -58,7 +58,8 @@ export function createUpdaterClient({ socketPath, controlToken, headId }) {
         },
       }, 30_000);
     },
-    job: (jobId) => request(socketPath, "", `/v1/jobs/${encodeURIComponent(jobId)}`, null, 5_000, "GET"),
+    job: (jobId) => request(socketPath, controlToken, `/v1/jobs/${encodeURIComponent(jobId)}`, null, 5_000, "GET"),
+    selfUpdate: () => request(socketPath, controlToken, "/v1/lifecycle/updater-self-update", { head_id: headId }, 30_000),
     rollback: (jobId) => request(socketPath, controlToken, `/v1/jobs/${encodeURIComponent(jobId)}/rollback`, null, 30_000),
     checkNeptune: (currentVersion) => request(socketPath, controlToken, "/v1/components/neptune-linux/check", { head_id: headId, current_version: currentVersion }, 30_000),
     updateNeptune: (version) => request(socketPath, controlToken, "/v1/components/neptune-linux/update", { head_id: headId, version }, 300_000),

@@ -11,8 +11,8 @@ root-owned secret-файлы, control token и socket groups и регистри
 когда локального Kernel нет.
 
 После установки можно создать в Saturn pipeline **Volt ZIP + personal.volt
-mirror**. Если Neptune уже установлен, введите setup code через Settings → Backup
-→ **Initialize Neptune**. `sudo volt-install backup` остаётся резервным
+mirror**. Введите setup code через Settings → Backup
+→ **Initialize Neptune**: Updater установит отсутствующий Neptune или подключит уже работающий экземпляр. `sudo volt-install backup` остаётся резервным
 CLI-сценарием. Расписания задаются только в Saturn → Synchronization.
 
 ## Что реализовано
@@ -46,8 +46,8 @@ Vault master key также находится внутри `personal.volt`, н�
 зашифрованном виде. Основная обёртка создаётся из Access Key через Argon2id
 (64 MiB, 3 прохода) и AES-256-GCM. Поэтому для офлайн-копии достаточно самого
 `personal.volt` и Access Key. Сервер может иметь вторую обёртку от отдельного
-32-байтного device key: она нужна только для unattended-start и не требуется
-офлайн-клиенту. Для Kernel-to-Volt token в настройках хранится только SHA-256
+32-байтного device key для совместимости старых файлов. В строгом режиме она
+не разрешает запуск без Access Key и не требуется офлайн-клиенту. Для Kernel-to-Volt token в настройках хранится только SHA-256
 verifier; исходное значение не входит ни в `personal.volt`, ни в backup и не
 может быть прочитано обратно.
 
@@ -67,16 +67,15 @@ npm start
 ```
 
 Такой запуск создаст `data/personal.volt`; его можно скопировать на другой
-компьютер и открыть тем же Access Key. Для unattended server startup добавьте:
-
-```powershell
-npm run generate-device-key -- C:\secure\volt-device.key
-$env:VOLT_DEVICE_KEY_FILE = 'C:\secure\volt-device.key'
-```
+компьютер и открыть тем же Access Key. Для автоматического запуска передайте
+Access Key в защищённом файле через `VOLT_ACCESS_KEY_FILE`; это явная передача
+ключа. Без ключа сервер поднимет экран разблокировки, а readiness останется
+недоступным до ввода действующего Access Key. Один `VOLT_DEVICE_KEY_FILE`
+разблокировку не выполняет.
 
 Интерфейс: `http://127.0.0.1:18184`. Для production используйте HTTPS reverse
-proxy, `VOLT_SECURE_COOKIES=true`, внешние read-only secret mounts для device и
-bootstrap Access Key. Kernel и Volt могут работать на разных серверах: в
+proxy, `VOLT_SECURE_COOKIES=true`, внешний read-only secret mount для
+Access Key. Kernel и Volt могут работать на разных серверах: в
 Settings → Security интерфейса Kernel укажите HTTPS URL Volt и общий токен, а
 затем задайте то же значение в Settings интерфейса Volt. Volt сохраняет только
 verifier, поэтому после сохранения токен нельзя посмотреть — только заменить.
@@ -114,7 +113,7 @@ sudoedit /opt/volt/.env
 sudo volt-install
 ```
 
-Bootstrap проверяет SHA-256 архива до распаковки. В release bundle уже находятся
+Bootstrap проверяет подпись manifest доверенным RSA-ключом и SHA-256 архива до распаковки. В release bundle уже находятся
 зафиксированные binary/unit/installer Updater; установщик не скачивает
 исполняемый файл во время привилегированного шага и не требует вручную создавать
 `UPDATER_CONTROL_TOKEN`, GID или token-файлы. Повторный `sudo volt-install`
@@ -123,7 +122,7 @@ Bootstrap проверяет SHA-256 архива до распаковки. В 
 Settings → Updates получает `repositories.volt.url` и
 `repositories.updater.url` через Kernel Register. При установке релиза Volt
 создаётся зашифрованный logical backup, после чего Updater проверяет manifest,
-checksum и immutable image digest, пересоздаёт только контейнер Volt и выполняет
+подпись, checksum и immutable image digest, пересоздаёт только контейнер Volt и выполняет
 health check. При ошибке он возвращает предыдущий image и импортирует backup.
 
 ## Подключение через Kernel
@@ -176,3 +175,5 @@ Vaultwarden рассматривался как источник продукт�
 хранилище, явное раскрытие, отдельные credentials), но код и схема данных Volt
 реализованы независимо: модель Exocortex требует key/value полей, immutable
 revisions и единственного доверенного machine broker в Kernel.
+
+The current six-service deployment, trust, recovery and acceptance contract is documented in [Deployment readiness](DEPLOYMENT_READINESS.md).

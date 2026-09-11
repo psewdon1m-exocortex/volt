@@ -47,6 +47,14 @@ export function createWrappedEntryKey(masterKey, entryId) {
   return { entryKey, wrapped };
 }
 
+export function rewrapEntryKey(sourceMasterKey, targetMasterKey, entryId, row) {
+  const key = unwrapEntryKey(sourceMasterKey, entryId, row);
+  try {
+    const wrapped = seal(targetMasterKey, key, `exocortex-volt:item-key:v1:${entryId}`);
+    return { ...row, wrapped_key: wrapped.ciphertext, key_nonce: wrapped.nonce, key_tag: wrapped.tag };
+  } finally { key.fill(0); }
+}
+
 export function unwrapEntryKey(masterKey, entryId, row) {
   return open(masterKey, {
     ciphertext: row.wrapped_key,

@@ -210,6 +210,7 @@ export function createApp({
   app.get("/api/v1/health", (_request, response) => {
     response.json({ status: "ok", service: "volt", schema: "volt.health.v1" });
   });
+  app.get("/health/live", (_request, response) => response.json({ status: "ok", locked: false }));
 
   app.post("/api/v1/session", requireSameOrigin, (request, response, next) => {
     try {
@@ -264,7 +265,7 @@ export function createApp({
       const supplied = bearerToken(request) ?? "";
       const authorized = supplied.length === expected.length && supplied.length > 0 && timingSafeEqual(Buffer.from(supplied), Buffer.from(expected));
       if (!authorized) throw domainError(401, "NEPTUNE_UNAUTHORIZED", "Invalid Neptune export token");
-      const archive = buildBackupArchive(store.exportLogicalState());
+      const archive = buildBackupArchive(store.exportLogicalState(), appVersion, store.createPortableSnapshot());
       store.audit({ actor: "service:neptune", action: "backup.export" });
       response.set({ "Content-Type": "application/zip", "Content-Length": String(archive.byteLength), "Cache-Control": "no-store" });
       response.send(Buffer.from(archive));
@@ -313,7 +314,7 @@ export function createApp({
     try {
       if (!request.file) throw domainError(400, "BACKUP_REQUIRED", "Updater did not provide a Volt backup ZIP");
       const inspected = parseBackupArchive(request.file.buffer);
-      const result = store.importLogicalState(inspected.state, { actor: "service:updater", archiveDigest: inspected.digest });
+      const result = store.restoreBackup(inspected, { actor: "service:updater" });
       response.json({ restored: true, ...result });
     } catch (error) { next(error); }
   });
@@ -441,6 +442,13 @@ export function createApp({
       response.json(await checkRelease("updater", status.version));
     } catch (error) { next(error); }
   });
+
+  app.post("/api/v1/update/updater/install", requireSameOrigin, async (_request, response, next) => {
+    try {
+      if (!updaterClient) throw domainError(503, "UPDATER_NOT_CONFIGURED", "Updater is not configured");
+      response.status(202).json(await updaterClient.selfUpdate());
+    } catch (error) { next(error); }
+  });
   app.post("/api/v1/update/install", requireSameOrigin, async (request, response, next) => {
     try {
       if (!updaterClient) throw domainError(503, "UPDATER_NOT_CONFIGURED", "Updater is not configured");
@@ -450,7 +458,7 @@ export function createApp({
       if (!candidate.update_available || candidate.available_version !== version) {
         throw domainError(409, "RELEASE_CHANGED", "Requested Volt version is not the current upgrade candidate");
       }
-      const backup = Buffer.from(buildBackupArchive(store.exportLogicalState(), appVersion));
+      const backup = Buffer.from(buildBackupArchive(store.exportLogicalState(), appVersion, store.createPortableSnapshot()));
       const stamp = new Date().toISOString().replace(/[-:TZ.]/g, "").slice(0, 14);
       const job = await updaterClient.createUpdate(version, `volt-pre-update-${stamp}.zip`, backup);
       store.audit({ actor: "operator", action: "updater.install", target: version, details: { job_id: job.id ?? null } });
@@ -635,7 +643,7 @@ export function createApp({
   app.get("/api/v1/backup", (_request, response, next) => {
     try {
       store.audit({ actor: "operator", action: "backup.export" });
-      const archive = buildBackupArchive(store.exportLogicalState());
+      const archive = buildBackupArchive(store.exportLogicalState(), appVersion, store.createPortableSnapshot());
       response.set({
         "Content-Type": "application/zip",
         "Content-Disposition": `attachment; filename="volt-backup-${new Date().toISOString().slice(0, 10)}.zip"`,
@@ -659,7 +667,7 @@ export function createApp({
       if (request.body?.digest !== inspected.digest) {
         throw domainError(409, "BACKUP_CHANGED", "The backup differs from the inspected archive");
       }
-      const result = store.importLogicalState(inspected.state, { archiveDigest: inspected.digest });
+      const result = store.restoreBackup(inspected, { accessKey: request.body?.access_key || null });
       response.clearCookie(COOKIE_NAME, { httpOnly: true, sameSite: "strict", secure: secureCookies, path: "/" });
       response.json({ restored: true, ...result });
     } catch (error) { next(error); }
@@ -672,7 +680,7 @@ export function createApp({
   app.get("/robots.txt", (_request, response) => response.type("text/plain").send("User-agent: *\nDisallow: /\n"));
   if (distDir && existsSync(distDir)) {
     app.use(express.static(distDir, { etag: false, lastModified: false, maxAge: 0 }));
-    app.get("/{*path}", (_request, response) => response.sendFile(path.join(distDir, "index.html")));
+    app.get(["/", "/dashboard", "/vault", "/trash", "/audit", "/settings", "/docs", "/documentation"], (_request, response) => response.sendFile(path.join(distDir, "index.html")));
   }
 
   app.use((request, _response, next) => next(domainError(404, "NOT_FOUND", `No route for ${request.method} ${request.path}`)));

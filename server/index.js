@@ -1,8 +1,10 @@
 import path from "node:path";
+import { trustedProxies } from "./proxy-policy.js";
 import { fileURLToPath } from "node:url";
 import fs from "node:fs";
 
 import { createApp } from "./app.js";
+import { createLockedRuntime } from "./locked-runtime.js";
 import { deriveSessionKey, readMasterKey } from "./crypto.js";
 import { validateRuntimeConfig } from "./security.js";
 import { VoltStore } from "./store.js";
@@ -20,7 +22,7 @@ const deviceKeyFile = process.env.VOLT_DEVICE_KEY_FILE || process.env.VOLT_MASTE
 const legacyMasterKeyFile = process.env.VOLT_LEGACY_MASTER_KEY_FILE || process.env.VOLT_MASTER_KEY_FILE;
 const deviceKey = deviceKeyFile ? readMasterKey(path.resolve(deviceKeyFile)) : null;
 const legacyMasterKey = legacyMasterKeyFile ? readMasterKey(path.resolve(legacyMasterKeyFile)) : null;
-const accessKey = process.env.VOLT_ACCESS_KEY_FILE
+const bootstrapAccessKey = process.env.VOLT_ACCESS_KEY_FILE
   ? fs.readFileSync(path.resolve(process.env.VOLT_ACCESS_KEY_FILE), "utf8").trim()
   : process.env.VOLT_ACCESS_KEY;
 const updaterControlToken = process.env.UPDATER_CONTROL_TOKEN_FILE
@@ -30,6 +32,10 @@ const kernelToken = process.env.VOLT_KERNEL_TOKEN_FILE
   ? fs.readFileSync(path.resolve(process.env.VOLT_KERNEL_TOKEN_FILE), "utf8").trim()
   : process.env.VOLT_KERNEL_TOKEN;
 let vault;
+let store;
+const host = process.env.VOLT_LISTEN_HOST || "127.0.0.1";
+const port = Number(process.env.VOLT_PORT || 18184);
+function unlockRuntime(accessKey) {
 if (fs.existsSync(vaultFilename)) {
   vault = unlockPortableVault({ filename: vaultFilename, accessKey, deviceKey });
 } else if (fs.existsSync(legacyFilename)) {
@@ -47,14 +53,12 @@ if (fs.existsSync(vaultFilename)) {
 }
 validateRuntimeConfig({ accessKey, masterKey: vault.masterKey, kernelToken, requireAccessKey: vault.created || vault.migrated });
 
-const store = new VoltStore({
+store = new VoltStore({
   filename: vaultFilename,
   masterKey: vault.masterKey,
   auditRetention: Number(process.env.VOLT_AUDIT_RETENTION || 10_000),
 });
-const host = process.env.VOLT_LISTEN_HOST || "127.0.0.1";
-const port = Number(process.env.VOLT_PORT || 18184);
-const app = createApp({
+return createApp({
   store,
   sessionKey: deriveSessionKey(vault.masterKey),
   accessKey,
@@ -64,7 +68,7 @@ const app = createApp({
   kernelServiceToken: process.env.KERNEL_SERVICE_TOKEN || "",
   kernelToken,
   secureCookies: process.env.VOLT_SECURE_COOKIES === "true",
-  trustProxy: process.env.VOLT_TRUST_PROXY === "true" ? 1 : false,
+  trustProxy: trustedProxies(process.env.VOLT_TRUSTED_PROXIES),
   distDir: path.join(rootDir, "dist"),
   neptuneClient: createNeptuneClient({
     socketPath: process.env.NEPTUNE_SOCKET_PATH || "/run/neptune/neptuned.sock",
@@ -81,12 +85,20 @@ const app = createApp({
   neptuneExportUrl: `http://127.0.0.1:${port}/api/v1/internal/neptune/backup`,
 });
 
+}
+const app = createLockedRuntime({
+  unlock: unlockRuntime,
+  distDir: path.join(rootDir, "dist"),
+  initialApp: bootstrapAccessKey ? unlockRuntime(bootstrapAccessKey) : null,
+  trustProxy: trustedProxies(process.env.VOLT_TRUSTED_PROXIES),
+});
+
 const server = app.listen(port, host, () => {
   console.log(`Volt is listening on http://${host}:${port}`);
 });
 const trashRetentionTimer = setInterval(() => {
   try {
-    const purged = store.purgeExpiredEntries();
+    const purged = store?.purgeExpiredEntries();
     if (purged) console.log(`Permanently deleted ${purged} expired trash ${purged === 1 ? "entry" : "entries"}`);
   } catch (error) {
     console.error("Could not run trash retention cleanup", error);
@@ -97,8 +109,11 @@ trashRetentionTimer.unref();
 function shutdown() {
   clearInterval(trashRetentionTimer);
   server.close(() => {
-    store.checkpoint();
-    store.close();
+    store?.checkpoint();
+    store?.close();
+    vault?.masterKey.fill(0);
+    deviceKey?.fill(0);
+    legacyMasterKey?.fill(0);
     process.exit(0);
   });
 }

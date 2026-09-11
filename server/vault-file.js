@@ -243,10 +243,10 @@ export function createPortableVault({ filename, accessKey, deviceKey = null, mas
   return { filename, vaultId, masterKey, created: true, unlockedWith: "created" };
 }
 
-export function unlockPortableVault({ filename, accessKey = null, deviceKey = null }) {
+export function unlockPortableVault({ filename, accessKey = null, deviceKey = null, allowDeviceUnlock = false }) {
   if (!existsSync(filename)) throw vaultError("VAULT_NOT_FOUND", "personal.volt does not exist");
   const header = readHeader(filename);
-  if (deviceKey && header.device) {
+  if (allowDeviceUnlock && deviceKey && header.device) {
     try {
       const masterKey = open(deriveDeviceWrapKey(deviceKey, header.vaultId), header.device, deviceAad(header.vaultId));
       assertKey(masterKey, "Vault master key");

@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from "node:crypto";
-import { mkdirSync, readFileSync, statfsSync, unlinkSync } from "node:fs";
+import { mkdirSync, readFileSync, statfsSync, unlinkSync, writeFileSync } from "node:fs";
 import { cpus, freemem, totalmem } from "node:os";
 import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
@@ -9,8 +9,9 @@ import {
   decryptRevision,
   encryptRevision,
   unwrapEntryKey,
+  rewrapEntryKey,
 } from "./crypto.js";
-import { portableVaultInfo, rotatePortableAccessKey } from "./vault-file.js";
+import { portableVaultInfo, rotatePortableAccessKey, unlockPortableVault } from "./vault-file.js";
 
 function isoNow() {
   return new Date().toISOString();
@@ -763,6 +764,24 @@ export class VoltStore {
       `).all(),
     };
     return tables;
+  }
+
+  restoreBackup(inspected, { accessKey = null, actor = "operator" } = {}) {
+    if (!inspected.portableSnapshot || !accessKey) {
+      return this.importLogicalState(inspected.state, { actor, archiveDigest: inspected.digest });
+    }
+    const temporary = `${this.filename}.restore-${randomUUID()}`;
+    let masterKey;
+    try {
+      writeFileSync(temporary, inspected.portableSnapshot, { mode: 0o600, flag: "wx" });
+      try { masterKey = unlockPortableVault({ filename: temporary, accessKey }).masterKey; }
+      catch { throw Object.assign(new Error("Archive Access Key is incorrect or the portable snapshot is damaged"), { status: 400, code: "ARCHIVE_UNLOCK_FAILED" }); }
+      const state = { ...inspected.state, entries: inspected.state.entries.map((row) => rewrapEntryKey(masterKey, this.masterKey, row.id, row)) };
+      return this.importLogicalState(state, { actor, archiveDigest: inspected.digest });
+    } finally {
+      masterKey?.fill(0);
+      try { unlinkSync(temporary); } catch {}
+    }
   }
 
   importLogicalState(state, { actor = "operator", archiveDigest = null } = {}) {

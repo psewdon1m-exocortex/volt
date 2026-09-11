@@ -5,7 +5,7 @@ import { strToU8, unzipSync, zipSync } from "fflate";
 import { domainError } from "./store.js";
 
 const FORMAT = "exocortex-volt-logical-backup";
-const SCHEMA_VERSION = 2;
+const SCHEMA_VERSION = 3;
 const MAX_COMPRESSED_BYTES = 32 * 1024 * 1024;
 const MAX_UNCOMPRESSED_BYTES = 128 * 1024 * 1024;
 const MEMBER_TABLES = {
@@ -19,7 +19,7 @@ const LEGACY_MEMBER_TABLES = {
   "data/principals.jsonl": "principals",
   "data/grants.jsonl": "grants",
 };
-const ALL_KNOWN_MEMBERS = new Set(["manifest.json", "README.txt", ...Object.keys(LEGACY_MEMBER_TABLES)]);
+const ALL_KNOWN_MEMBERS = new Set(["manifest.json", "README.txt", "personal.volt", ...Object.keys(LEGACY_MEMBER_TABLES)]);
 
 function sha256(value) {
   return createHash("sha256").update(value).digest("hex");
@@ -29,7 +29,7 @@ function lines(rows) {
   return strToU8(rows.map((row) => JSON.stringify(row)).join("\n") + (rows.length ? "\n" : ""));
 }
 
-export function buildBackupArchive(state, version = "0.1.0") {
+export function buildBackupArchive(state, version = "0.1.0", portableSnapshot = null) {
   const files = {};
   const members = {};
   for (const [member, table] of Object.entries(MEMBER_TABLES)) {
@@ -37,15 +37,22 @@ export function buildBackupArchive(state, version = "0.1.0") {
     members[member] = bytes;
     files[member] = { sha256: sha256(bytes), uncompressed_bytes: bytes.byteLength, records: state[table].length };
   }
+  if (portableSnapshot) {
+    const bytes = new Uint8Array(portableSnapshot);
+    members["personal.volt"] = bytes;
+    files["personal.volt"] = { sha256: sha256(bytes), uncompressed_bytes: bytes.byteLength, records: 1 };
+  }
   members["README.txt"] = strToU8(
-    "Exocortex Volt logical backup.\n\nContains ciphertext and metadata, never plaintext secret values, Access Key verifiers or bearer tokens.\nRestore target must be the same personal.volt vault. Restore mode: replace.\n",
+    portableSnapshot
+      ? "Exocortex Volt recovery backup.\nContains an independently recoverable personal.volt and encrypted logical records. Unlock with the archive Access Key. No server device key is included. Restore mode: replace.\n"
+      : "Exocortex Volt legacy logical backup.\nContains ciphertext and metadata. Requires the original vault master key. Restore mode: replace.\n",
   );
   const manifest = {
     format: FORMAT,
-    schema_version: SCHEMA_VERSION,
+    schema_version: portableSnapshot ? SCHEMA_VERSION : 2,
     source_version: version,
     created_at: new Date().toISOString(),
-    scope: "complete",
+    scope: portableSnapshot ? "complete" : "same-vault",
     restore_mode: "replace",
     encryption: { scheme: "AES-256-GCM envelope encryption", external_key_required: true },
     files,
@@ -93,11 +100,12 @@ export function parseBackupArchive(bytes) {
   let manifest;
   try { manifest = JSON.parse(Buffer.from(members["manifest.json"]).toString("utf8")); }
   catch { throw domainError(400, "BACKUP_MANIFEST_INVALID", "Backup manifest is invalid"); }
-  if (manifest.format !== FORMAT || ![1, SCHEMA_VERSION].includes(manifest.schema_version) || manifest.restore_mode !== "replace") {
+  if (manifest.format !== FORMAT || ![1, 2, SCHEMA_VERSION].includes(manifest.schema_version) || manifest.restore_mode !== "replace") {
     throw domainError(400, "BACKUP_VERSION_UNSUPPORTED", "Backup format or schema version is unsupported");
   }
   const memberTables = manifest.schema_version === 1 ? LEGACY_MEMBER_TABLES : MEMBER_TABLES;
   const allowedMembers = new Set(["manifest.json", "README.txt", ...Object.keys(memberTables)]);
+  if (manifest.schema_version === 3) allowedMembers.add("personal.volt");
   if (names.length !== allowedMembers.size || names.some((name) => !allowedMembers.has(name))) {
     throw domainError(400, "BACKUP_MEMBERS_INVALID", "Backup members do not match the Volt allow-list");
   }
@@ -113,7 +121,14 @@ export function parseBackupArchive(bytes) {
   }
   delete state.principals;
   delete state.grants;
-  return { state, manifest, digest: sha256(bytes) };
+  const portableSnapshot = manifest.schema_version === 3 ? Buffer.from(members["personal.volt"]) : null;
+  if (portableSnapshot) {
+    const metadata = manifest.files?.["personal.volt"];
+    if (!metadata || metadata.sha256 !== sha256(portableSnapshot) || metadata.uncompressed_bytes !== portableSnapshot.byteLength || metadata.records !== 1) {
+      throw domainError(400, "BACKUP_CHECKSUM_MISMATCH", "Integrity check failed for personal.volt");
+    }
+  }
+  return { state, portableSnapshot, manifest, digest: sha256(bytes) };
 }
 
 export { MAX_COMPRESSED_BYTES };

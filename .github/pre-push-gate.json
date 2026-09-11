@@ -1,0 +1,58 @@
+{
+  "version": 1,
+  "service": "volt",
+  "exposure_modes": [
+    "private",
+    "concealed"
+  ],
+  "profiles": {
+    "backup_restore": {
+      "applicable": true,
+      "evidence": [
+        "DEPLOYMENT_READINESS.md",
+        "server/backup.js",
+        "tests/recovery.test.js"
+      ]
+    },
+    "service_update": {
+      "applicable": true,
+      "evidence": [
+        "DEPLOYMENT_READINESS.md",
+        "server/updater-client.js",
+        "src/SelfUpdateButton.tsx"
+      ]
+    },
+    "internal_documentation": {
+      "applicable": true,
+      "evidence": [
+        "src/DocumentationPage.tsx"
+      ]
+    },
+    "technical_documentation": {
+      "applicable": true,
+      "evidence": [
+        "README.md",
+        "DEPLOYMENT_READINESS.md"
+      ]
+    },
+    "security": {
+      "applicable": true,
+      "evidence": [
+        "server/locked-runtime.js",
+        "tests/locked-runtime.test.js"
+      ]
+    },
+    "public_seo_geo": {
+      "applicable": false,
+      "reason": "This service has no deliberately public/indexable content; crawler exclusion is checked in the private/concealed profile."
+    },
+    "private_concealed": {
+      "applicable": true,
+      "evidence": [
+        "DEPLOYMENT_READINESS.md",
+        "server/locked-runtime.js",
+        "tests/locked-runtime.test.js"
+      ]
+    }
+  }
+}

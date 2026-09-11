@@ -42,7 +42,7 @@ test("personal.volt opens offline with its Access Key and survives Access Key ro
 
     assert.throws(() => unlockPortableVault({ filename, accessKey }), /could not be unlocked/);
     assert.equal(unlockPortableVault({ filename, accessKey: nextAccessKey }).unlockedWith, "access-key");
-    assert.equal(unlockPortableVault({ filename, deviceKey }).unlockedWith, "device");
+    assert.equal(unlockPortableVault({ filename, deviceKey, allowDeviceUnlock: true }).unlockedWith, "device");
     assert.equal(portableVaultInfo(filename).format, "exocortex-personal-volt");
     assert.equal(readFileSync(filename).includes(Buffer.from("offline-secret-value")), false);
   } finally {
@@ -89,7 +89,7 @@ test("an existing access-only personal.volt can enroll a server device key", () 
     assert.equal(portableVaultInfo(filename).has_device_wrapper, false);
     unlockPortableVault({ filename, accessKey, deviceKey });
     assert.equal(portableVaultInfo(filename).has_device_wrapper, true);
-    assert.equal(unlockPortableVault({ filename, deviceKey }).unlockedWith, "device");
+    assert.equal(unlockPortableVault({ filename, deviceKey, allowDeviceUnlock: true }).unlockedWith, "device");
   } finally {
     rmSync(directory, { recursive: true, force: true });
   }

@@ -158,6 +158,7 @@ export const api = {
   setKernelAccess: (update: { token?: string; url?: string }) => request<KernelStatus>("/api/v1/settings/kernel-access", { method: "PUT", body: JSON.stringify(update) }),
   updateStatus: () => request<{ installed_version: string; mechanism: string; updater: { reachable: boolean; version: string | null; error: string | null } }>("/api/v1/update/status"),
   checkUpdate: () => request<UpdateCheck>("/api/v1/update/check", { method: "POST", body: "{}" }),
+  installUpdater: () => request<UpdateJob>("/api/v1/update/updater/install", { method: "POST", body: "{}" }),
   checkUpdaterUpdate: () => request<UpdateCheck>("/api/v1/update/updater/check", { method: "POST", body: "{}" }),
   installUpdate: (version: string) => request<UpdateJob>("/api/v1/update/install", { method: "POST", body: JSON.stringify({ version }) }),
   updateJob: (jobId: string) => request<UpdateJob>(`/api/v1/update/jobs/${encodeURIComponent(jobId)}`),
@@ -182,10 +183,11 @@ export const api = {
     form.append("file", file);
     return request<{ digest: string; filename: string; bytes: number; manifest: { created_at: string; source_version: string; restore_mode: string; files: Record<string, { records: number }> } }>("/api/v1/backup/inspect", { method: "POST", body: form });
   },
-  restoreBackup: (file: File, digest: string) => {
+  restoreBackup: (file: File, digest: string, accessKey = "") => {
     const form = new FormData();
     form.append("file", file);
     form.append("digest", digest);
+    if (accessKey) form.append("access_key", accessKey);
     return request<{ restored: boolean }>("/api/v1/backup/restore", { method: "POST", body: form });
   },
   neptuneStatus: () => request<NeptuneStatus>("/api/v1/neptune/status"),

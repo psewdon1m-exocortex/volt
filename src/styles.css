@@ -203,7 +203,7 @@ h1, h2, h3, h4, p { margin-top: 0; }
 @keyframes spin { to { transform: rotate(360deg); } }
 
 .settings-list { width: 100%; max-width: none; gap: 27px; }
-.setting-card { position: relative; }
+.setting-card { position: relative; min-width: 0; max-width: 100%; }
 .setting-card .drag-handle span { border: 1px solid var(--line-inner); background: var(--decorative-dot); }
 .setting-card:hover .drag-handle span, .setting-card:focus-within .drag-handle span { border-color: var(--white); background: var(--white); }
 .setting-card-head { position: relative; height: 55px; display: flex; align-items: center; gap: 8px; padding: 0 32px 0 13px; border-bottom: 1px solid var(--line-inner); }
@@ -260,7 +260,7 @@ h1, h2, h3, h4, p { margin-top: 0; }
 .trash-retention-control { display: flex; align-items: end; flex-wrap: wrap; gap: 20px; }
 .trash-retention-control .button { min-width: 123px; }
 .kernel-group { margin-top: 44px !important; padding-top: 0; }
-.kernel-group .setting-group-content { width: 1532px; max-width: calc(100% + 2px); margin-top: 15px; margin-left: -2px; }
+.kernel-group .setting-group-content { width: 100%; max-width: 100%; margin-top: 15px; }
 .accent-controls { display: grid; grid-template-columns: 40px 326px 123px 123px; align-items: center; gap: 20px; }
 .accent-swatch { position: relative; width: 40px; height: 40px; border: 1px solid var(--line-inner); overflow: hidden; cursor: pointer; background: var(--black); }
 .accent-swatch-color { position: absolute; inset: 7px; width: 24px; height: 24px; }
