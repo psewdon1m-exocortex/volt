@@ -25,7 +25,8 @@ pinned_updater_version="$(tr -d '[:space:]' < "$root/.release/updater.version")"
 mkdir -p "$root/$output"
 stage="$(mktemp -d)"
 trap 'rm -rf "$stage"' EXIT
-cp "$root/compose.production.yaml" "$root/.env.example" "$root/README.md" "$root/install.sh" "$stage/"
+cp "$root/compose.production.yaml" "$root/.env.example" "$root/README.md" \
+  "$root/install.sh" "$root/nginx.security.conf" "$stage/"
 cp -R "$updater_dir" "$stage/updater"
 find "$stage/updater" -type f -name '*.sh' -exec chmod 0755 {} +
 chmod 0755 "$stage/install.sh" "$stage/updater/updater-linux-amd64"

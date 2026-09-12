@@ -82,6 +82,12 @@ verifier, поэтому после сохранения токен нельзя
 Прямой listener по-прежнему публикуется только на loopback; доступ между
 серверами проходит через HTTPS reverse proxy.
 
+Публичный HTTPS virtual host показывает locked/login UI с любого клиентского
+IP. Данные и управляющие API доступны только после проверки Access Key и через
+защищённую cookie-сессию. Включите из release bundle
+`/opt/volt/nginx.security.conf`; он скрывает внутренние callback/Neptune routes
+и probe paths, но намеренно не содержит source-IP `allow`/`deny` ACL.
+
 Volt следует общему UI/UX-контракту Exocortex: true-black поверхности,
 Consolas для интерфейсного текста, Space Grotesk только для названия сервиса и
 страниц, квадратная геометрия без теней и градиентов, 250 px sidebar и 123 px
@@ -108,7 +114,7 @@ grants. Старые `VOLT_SERVICE_TOKEN` после обновления бол
 Скачайте `bootstrap.sh` из GitHub Release и укажите ту же версию релиза:
 
 ```bash
-sudo sh bootstrap.sh --version 0.1.0
+sudo sh bootstrap.sh --version 0.1.1
 sudoedit /opt/volt/.env
 sudo volt-install
 ```

@@ -2,6 +2,7 @@
   "version": 1,
   "service": "volt",
   "exposure_modes": [
+    "public/non-indexable",
     "private",
     "concealed"
   ],
@@ -39,7 +40,9 @@
       "applicable": true,
       "evidence": [
         "server/locked-runtime.js",
-        "tests/locked-runtime.test.js"
+        "tests/locked-runtime.test.js",
+        "nginx.security.conf",
+        "tests/nginx-security.test.js"
       ]
     },
     "public_seo_geo": {
@@ -51,7 +54,9 @@
       "evidence": [
         "DEPLOYMENT_READINESS.md",
         "server/locked-runtime.js",
-        "tests/locked-runtime.test.js"
+        "tests/locked-runtime.test.js",
+        "nginx.security.conf",
+        "tests/nginx-security.test.js"
       ]
     }
   }

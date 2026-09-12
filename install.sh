@@ -70,7 +70,7 @@ install_command() {
 copy_release_files() {
   mkdir -p "$target"
   chmod 0750 "$target"
-  for name in compose.production.yaml .env.example README.md install.sh; do
+  for name in compose.production.yaml .env.example README.md install.sh nginx.security.conf; do
     [ -f "$script_dir/$name" ] || fail "release bundle is missing $name"
     if [ "$script_dir/$name" != "$target/$name" ]; then
       install -m 0644 "$script_dir/$name" "$target/$name"

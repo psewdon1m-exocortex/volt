@@ -95,12 +95,12 @@ awk '
 stage="$work/stage"
 mkdir -p "$stage"
 tar -xzf "$work/$bundle" -C "$stage" --no-same-owner --no-same-permissions
-for name in compose.production.yaml .env.example README.md install.sh updater/install.sh updater/updater-linux-amd64 updater/systemd/updater.service; do
+for name in compose.production.yaml .env.example README.md install.sh nginx.security.conf updater/install.sh updater/updater-linux-amd64 updater/systemd/updater.service; do
   [ -f "$stage/$name" ] || fail "release bundle is missing $name"
 done
 mkdir -p "$target"
 chmod 0750 "$target"
-for name in compose.production.yaml .env.example README.md install.sh; do
+for name in compose.production.yaml .env.example README.md install.sh nginx.security.conf; do
   install -m 0644 "$stage/$name" "$target/$name"
 done
 chmod 0755 "$target/install.sh"

@@ -31,6 +31,7 @@ for (const required of [
   "compose.production.yaml",
   ".env.example",
   "install.sh",
+  "nginx.security.conf",
   "updater/install.sh",
   "updater/updater-linux-amd64",
   "updater/systemd/updater.service",
