@@ -148,7 +148,7 @@ jobs:
       - name: Sign trusted release manifest
         env:
           RELEASE_SIGNING_KEY: ${{ secrets.RELEASE_SIGNING_KEY }}
-        run: node scripts/sign-release.mjs release-artifacts/volt-release.json
+        run: node scripts/sign-release.mjs --export-public-key release-artifacts/volt.pem release-artifacts/volt-release.json
       - uses: actions/attest-build-provenance@43d14bc2b83dec42d39ecae14e916627a18bb661 # v3
         with:
           subject-path: "release-artifacts/*"

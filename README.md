@@ -111,15 +111,19 @@ grants. Старые `VOLT_SERVICE_TOKEN` после обновления бол
 
 ## Production-установка и обновления
 
-Скачайте `bootstrap.sh` из GitHub Release и укажите ту же версию релиза:
+Запустите bootstrap из репозитория; без `--version` он сам выбирает последний
+стабильный `volt-v*` релиз:
 
 ```bash
-sudo sh bootstrap.sh --version 0.1.1
+curl -fsSL https://raw.githubusercontent.com/psewdon1m-exocortex/volt/main/scripts/bootstrap.sh | sudo sh
 sudoedit /opt/volt/.env
 sudo volt-install
 ```
 
-Bootstrap проверяет подпись manifest доверенным RSA-ключом и SHA-256 архива до распаковки. В release bundle уже находятся
+На чистом сервере bootstrap получает `volt.pem` из выбранного HTTPS-релиза,
+проверяет им подпись manifest и закрепляет ключ в
+`/etc/exocortex/release-trust/volt.pem`; существующий ключ автоматически не
+заменяется. Затем проверяется SHA-256 архива до распаковки. В release bundle уже находятся
 зафиксированные binary/unit/installer Updater; установщик не скачивает
 исполняемый файл во время привилегированного шага и не требует вручную создавать
 `UPDATER_CONTROL_TOKEN`, GID или token-файлы. Повторный `sudo volt-install`

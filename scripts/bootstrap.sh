@@ -16,24 +16,51 @@ while [ "$#" -gt 0 ]; do
     *) fail "unknown argument: $1" ;;
   esac
 done
-printf '%s' "$version" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+([.-][0-9A-Za-z.-]+)?$' || fail "pass --version X.Y.Z"
 [ "$(id -u)" -eq 0 ] || fail "run as root"
+if command -v apt-get >/dev/null 2>&1; then
+  apt-get update
+  DEBIAN_FRONTEND=noninteractive apt-get install -y ca-certificates curl openssl python3 tar
+fi
 command -v curl >/dev/null 2>&1 || fail "curl is required"
 command -v sha256sum >/dev/null 2>&1 || fail "sha256sum is required"
 command -v tar >/dev/null 2>&1 || fail "tar is required"
+command -v python3 >/dev/null 2>&1 || fail "python3 is required for signature verification"
+command -v openssl >/dev/null 2>&1 || fail "openssl is required for signature verification"
 
 work=$(mktemp -d)
 trap 'rm -rf "$work"' EXIT HUP INT TERM
+if [ -z "$version" ]; then
+  curl -fsSL --proto '=https' --proto-redir '=https' --retry 3 \
+    "https://api.github.com/repos/$repository/releases?per_page=100" -o "$work/releases.json"
+  version=$(python3 - "$work/releases.json" <<'PYVERSION'
+import json, re, sys
+releases = json.load(open(sys.argv[1], encoding="utf8"))
+candidates = []
+for release in releases:
+    match = re.fullmatch(r"volt-v(\d+)\.(\d+)\.(\d+)", str(release.get("tag_name") or ""))
+    if match and not release.get("draft") and not release.get("prerelease"):
+        candidates.append((tuple(map(int, match.groups())), ".".join(match.groups())))
+if not candidates:
+    raise SystemExit("No stable volt-v* release is available")
+print(max(candidates)[1])
+PYVERSION
+  )
+fi
+printf '%s' "$version" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+([.-][0-9A-Za-z.-]+)?$' || fail "invalid release version"
 base="https://github.com/$repository/releases/download/volt-v$version"
 bundle="volt-$version-compose.tar.gz"
-command -v python3 >/dev/null 2>&1 || fail "python3 is required for signature verification"
-command -v openssl >/dev/null 2>&1 || fail "openssl is required for signature verification"
 trust_file="${EXOCORTEX_RELEASE_TRUST_FILE:-/etc/exocortex/release-trust/volt.pem}"
-[ -f "$trust_file" ] || fail "provision the Volt release public key before bootstrap"
 curl -fL --proto '=https' --proto-redir '=https' --max-filesize 2097152 -o "$work/manifest.json" "$base/volt-release.json"
 curl -fL --proto '=https' --proto-redir '=https' --max-filesize 16384 -o "$work/manifest.sig.json" "$base/volt-release.json.sig.json"
-python3 - "$work/manifest.json" "$work/manifest.sig.json" "$trust_file" <<'PYVERIFY'
-"""Bootstrap verifier: only a pre-provisioned public key establishes trust."""
+candidate_trust_file="$trust_file"
+bootstrap_trust=false
+if [ ! -f "$trust_file" ]; then
+  candidate_trust_file="$work/volt.pem"
+  curl -fL --proto '=https' --proto-redir '=https' --max-filesize 16384 -o "$candidate_trust_file" "$base/volt.pem"
+  bootstrap_trust=true
+fi
+python3 - "$work/manifest.json" "$work/manifest.sig.json" "$candidate_trust_file" <<'PYVERIFY'
+"""Verify the release with an existing pinned key or its HTTPS bootstrap key."""
 import base64
 import hashlib
 import json
@@ -61,6 +88,10 @@ with tempfile.TemporaryDirectory(prefix="exocortex-signature-") as temporary:
     signature.write_bytes(base64.b64decode(signed["signature"], validate=True))
     subprocess.run(["openssl", "dgst", "-sha256", "-verify", str(trust), "-signature", str(signature), "-sigopt", "rsa_padding_mode:pss", "-sigopt", "rsa_pss_saltlen:32", str(manifest)], check=True)
 PYVERIFY
+if [ "$bootstrap_trust" = true ]; then
+  install -d -o root -g root -m 0755 "$(dirname "$trust_file")"
+  install -o root -g root -m 0644 "$candidate_trust_file" "$trust_file"
+fi
 
 curl -fL --proto '=https' --tlsv1.2 --retry 3 --max-time 300 -o "$work/$bundle" "$base/$bundle"
 python3 - "$work/manifest.json" "$work/$bundle" "$version" <<'PYBUNDLE'

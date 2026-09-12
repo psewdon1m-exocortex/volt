@@ -88,7 +88,7 @@ export function createApp({
   kernelUrlSeed = "http://127.0.0.1:18180",
   kernelServiceUrl = "",
   kernelServiceToken = "",
-  appVersion = "0.1.1",
+  appVersion = "0.1.2",
   secureCookies = false,
   trustProxy = false,
   distDir = null,

@@ -17,7 +17,8 @@ pinned_updater_version="$(tr -d '[:space:]' < "$root/.release/updater.version")"
   echo "Updater bundle version $updater_version does not match pin $pinned_updater_version" >&2
   exit 4
 }
-[[ -f "$updater_dir/install.sh" && -f "$updater_dir/updater-linux-amd64" && -f "$updater_dir/systemd/updater.service" ]] || {
+[[ -f "$updater_dir/install.sh" && -f "$updater_dir/updater-linux-amd64" && \
+   -f "$updater_dir/systemd/updater.service" && -f "$updater_dir/release-trust/updater.pem" ]] || {
   echo "Verified Updater install bundle is incomplete" >&2
   exit 5
 }

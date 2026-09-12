@@ -29,7 +29,7 @@ function lines(rows) {
   return strToU8(rows.map((row) => JSON.stringify(row)).join("\n") + (rows.length ? "\n" : ""));
 }
 
-export function buildBackupArchive(state, version = "0.1.1", portableSnapshot = null) {
+export function buildBackupArchive(state, version = "0.1.2", portableSnapshot = null) {
   const files = {};
   const members = {};
   for (const [member, table] of Object.entries(MEMBER_TABLES)) {

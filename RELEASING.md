@@ -15,7 +15,10 @@ checks the pinned Updater install bundle, and publishes:
 
 - `volt-release.json`;
 - `volt-X.Y.Z-compose.tar.gz` and its SHA-256 file;
+- `volt.pem`;
 - `bootstrap.sh`.
+
+The embedded Updater bundle must contain `release-trust/updater.pem`.
 
 The release refuses to replace an existing version tag. Updater resolves only
 `volt-v*` GitHub releases and independently verifies the manifest identity,
