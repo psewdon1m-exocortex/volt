@@ -35,13 +35,19 @@ jobs:
           bash -n scripts/build-release.sh
           rm -rf release-artifacts-ci
           updater_bundle="$RUNNER_TEMP/volt-ci-updater/updater"
-          mkdir -p "$updater_bundle/systemd"
+          mkdir -p "$updater_bundle/systemd" "$updater_bundle/release-trust"
           install -m 0755 /dev/null "$updater_bundle/install.sh"
           install -m 0755 /dev/null "$updater_bundle/updater-linux-amd64"
           install -m 0644 /dev/null "$updater_bundle/systemd/updater.service"
+          openssl genpkey -algorithm RSA -pkeyopt rsa_keygen_bits:2048 \
+            -out "$RUNNER_TEMP/volt-ci-updater-private.pem" 2>/dev/null
+          openssl pkey -in "$RUNNER_TEMP/volt-ci-updater-private.pem" -pubout \
+            -out "$updater_bundle/release-trust/updater.pem"
+          rm -f "$RUNNER_TEMP/volt-ci-updater-private.pem"
           updater_version="$(tr -d '[:space:]' < .release/updater.version)"
-          GITHUB_REPOSITORY="$GITHUB_REPOSITORY" \
-            IMAGE_REFERENCE="ghcr.io/${GITHUB_REPOSITORY,,}" \
+          repository="$GITHUB_REPOSITORY"
+          GITHUB_REPOSITORY="$repository" \
+            IMAGE_REFERENCE="ghcr.io/${repository,,}" \
             IMAGE_DIGEST="sha256:$(printf 'a%.0s' {1..64})" \
             UPDATER_BUNDLE_DIR="$updater_bundle" \
             UPDATER_BUNDLE_VERSION="$updater_version" \
