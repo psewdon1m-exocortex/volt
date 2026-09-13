@@ -3,20 +3,18 @@ set -eu
 
 repository="psewdon1m-exocortex/volt"
 target="/opt/volt"
-version=""
+version="__VOLT_BOOTSTRAP_RELEASE_VERSION__"
+embedded_public_key_b64="__VOLT_BOOTSTRAP_PUBLIC_KEY_BASE64__"
 
 fail() {
   printf '%s\n' "volt bootstrap: $*" >&2
   exit 1
 }
 
-while [ "$#" -gt 0 ]; do
-  case "$1" in
-    --version) [ "$#" -ge 2 ] || fail "--version requires a value"; version=$2; shift 2 ;;
-    *) fail "unknown argument: $1" ;;
-  esac
-done
+[ "$#" -eq 0 ] || fail "this versioned bootstrap accepts no arguments"
 [ "$(id -u)" -eq 0 ] || fail "run as root"
+printf '%s' "$version" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+$' || fail "invalid embedded release version"
+[ ! -e "$target/.env" ] || fail "Volt is already prepared; use the Settings updater"
 if command -v apt-get >/dev/null 2>&1; then
   apt-get update
   DEBIAN_FRONTEND=noninteractive apt-get install -y ca-certificates curl openssl python3 tar
@@ -29,38 +27,20 @@ command -v openssl >/dev/null 2>&1 || fail "openssl is required for signature ve
 
 work=$(mktemp -d)
 trap 'rm -rf "$work"' EXIT HUP INT TERM
-if [ -z "$version" ]; then
-  curl -fsSL --proto '=https' --proto-redir '=https' --retry 3 \
-    "https://api.github.com/repos/$repository/releases?per_page=100" -o "$work/releases.json"
-  version=$(python3 - "$work/releases.json" <<'PYVERSION'
-import json, re, sys
-releases = json.load(open(sys.argv[1], encoding="utf8"))
-candidates = []
-for release in releases:
-    match = re.fullmatch(r"volt-v(\d+)\.(\d+)\.(\d+)", str(release.get("tag_name") or ""))
-    if match and not release.get("draft") and not release.get("prerelease"):
-        candidates.append((tuple(map(int, match.groups())), ".".join(match.groups())))
-if not candidates:
-    raise SystemExit("No stable volt-v* release is available")
-print(max(candidates)[1])
-PYVERSION
-  )
-fi
-printf '%s' "$version" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+([.-][0-9A-Za-z.-]+)?$' || fail "invalid release version"
 base="https://github.com/$repository/releases/download/volt-v$version"
 bundle="volt-$version-compose.tar.gz"
 trust_file="${EXOCORTEX_RELEASE_TRUST_FILE:-/etc/exocortex/release-trust/volt.pem}"
 curl -fL --proto '=https' --proto-redir '=https' --max-filesize 2097152 -o "$work/manifest.json" "$base/volt-release.json"
 curl -fL --proto '=https' --proto-redir '=https' --max-filesize 16384 -o "$work/manifest.sig.json" "$base/volt-release.json.sig.json"
-candidate_trust_file="$trust_file"
-bootstrap_trust=false
-if [ ! -f "$trust_file" ]; then
-  candidate_trust_file="$work/volt.pem"
-  curl -fL --proto '=https' --proto-redir '=https' --max-filesize 16384 -o "$candidate_trust_file" "$base/volt.pem"
-  bootstrap_trust=true
+printf '%s' "$embedded_public_key_b64" | openssl base64 -d -A >"$work/volt.pem"
+openssl pkey -pubin -in "$work/volt.pem" -noout >/dev/null 2>&1 || fail "embedded Volt release key is invalid"
+if [ -e "$trust_file" ]; then
+  if [ ! -f "$trust_file" ] || [ -L "$trust_file" ] || ! cmp -s "$work/volt.pem" "$trust_file"; then
+    fail "installed Volt release key differs from this release"
+  fi
 fi
-python3 - "$work/manifest.json" "$work/manifest.sig.json" "$candidate_trust_file" <<'PYVERIFY'
-"""Verify the release with an existing pinned key or its HTTPS bootstrap key."""
+python3 - "$work/manifest.json" "$work/manifest.sig.json" "$work/volt.pem" "$version" <<'PYVERIFY'
+"""Verify the exact release with the public key embedded in this bootstrap."""
 import base64
 import hashlib
 import json
@@ -70,7 +50,8 @@ import subprocess
 import sys
 import tempfile
 
-manifest, envelope, trust = map(Path, sys.argv[1:])
+manifest, envelope, trust = map(Path, sys.argv[1:4])
+expected_version = sys.argv[4]
 if manifest.stat().st_size > 2 * 1024 * 1024 or envelope.stat().st_size > 16384 or trust.stat().st_size > 16384:
     raise SystemExit("Release signature input exceeds limit")
 signed = json.loads(envelope.read_text(encoding="utf8"))
@@ -87,11 +68,12 @@ with tempfile.TemporaryDirectory(prefix="exocortex-signature-") as temporary:
     signature = Path(temporary) / "signature.bin"
     signature.write_bytes(base64.b64decode(signed["signature"], validate=True))
     subprocess.run(["openssl", "dgst", "-sha256", "-verify", str(trust), "-signature", str(signature), "-sigopt", "rsa_padding_mode:pss", "-sigopt", "rsa_pss_saltlen:32", str(manifest)], check=True)
+data = json.loads(manifest.read_text(encoding="utf8"))
+if data.get("service") != "volt" or data.get("version") != expected_version:
+    raise SystemExit("Volt release identity mismatch")
 PYVERIFY
-if [ "$bootstrap_trust" = true ]; then
-  install -d -o root -g root -m 0755 "$(dirname "$trust_file")"
-  install -o root -g root -m 0644 "$candidate_trust_file" "$trust_file"
-fi
+install -d -o root -g root -m 0755 "$(dirname "$trust_file")"
+[ -f "$trust_file" ] || install -o root -g root -m 0644 "$work/volt.pem" "$trust_file"
 
 curl -fL --proto '=https' --tlsv1.2 --retry 3 --max-time 300 -o "$work/$bundle" "$base/$bundle"
 python3 - "$work/manifest.json" "$work/$bundle" "$version" <<'PYBUNDLE'
@@ -126,7 +108,7 @@ awk '
 stage="$work/stage"
 mkdir -p "$stage"
 tar -xzf "$work/$bundle" -C "$stage" --no-same-owner --no-same-permissions
-for name in compose.production.yaml .env.example README.md install.sh nginx.security.conf updater/install.sh updater/updater-linux-amd64 updater/systemd/updater.service; do
+for name in compose.production.yaml .env.example README.md install.sh nginx.security.conf updater/install.sh updater/updater-linux-amd64 updater/systemd/updater.service updater/release-trust/updater.pem updater/release-trust/neptune.pem updater/release-trust/gryphon.pem; do
   [ -f "$stage/$name" ] || fail "release bundle is missing $name"
 done
 mkdir -p "$target"
@@ -135,9 +117,12 @@ for name in compose.production.yaml .env.example README.md install.sh nginx.secu
   install -m 0644 "$stage/$name" "$target/$name"
 done
 chmod 0755 "$target/install.sh"
-install -d -m 0755 "$target/updater/systemd"
+install -d -m 0755 "$target/updater/systemd" "$target/updater/release-trust"
 install -m 0755 "$stage/updater/install.sh" "$stage/updater/updater-linux-amd64" "$target/updater/"
 install -m 0644 "$stage/updater/systemd/updater.service" "$target/updater/systemd/updater.service"
+for service in updater neptune gryphon; do
+  install -m 0644 "$stage/updater/release-trust/$service.pem" "$target/updater/release-trust/$service.pem"
+done
 "$target/install.sh" prepare
 printf '%s\n' \
   "Release $version is verified and staged in $target." \

@@ -14,9 +14,23 @@ test("public-authenticated Nginx policy has no client IP allow-list", () => {
   assert.match(config, /proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;/);
 });
 
-test("clean-host bootstrap resolves a stable release and pins its public key", () => {
-  assert.match(bootstrap, /volt-v\(\\d\+\)/);
-  assert.match(bootstrap, /"\$base\/volt\.pem"/);
-  assert.match(bootstrap, /bootstrap_trust=true/);
+test("clean-host bootstrap pins exact embedded release trust", () => {
+  assert.match(bootstrap, /version="__VOLT_BOOTSTRAP_RELEASE_VERSION__"/);
+  assert.match(bootstrap, /embedded_public_key_b64="__VOLT_BOOTSTRAP_PUBLIC_KEY_BASE64__"/);
+  assert.doesNotMatch(bootstrap, /api\.github\.com\/repos/);
+  assert.doesNotMatch(bootstrap, /"\$base\/volt\.pem"/);
+  assert.match(bootstrap, /installed Volt release key differs from this release/);
   assert.match(releaseWorkflow, /--export-public-key release-artifacts\/volt\.pem/);
+  assert.match(releaseWorkflow, /build-bootstrap\.mjs/);
+});
+
+test("installer preserves Updater trust and never reads Kernel environment", () => {
+  const installer = fs.readFileSync(new URL("../install.sh", import.meta.url), "utf8");
+  for (const service of ["updater", "neptune", "gryphon"]) {
+    assert.match(installer, new RegExp(`release-trust/${service}\\.pem`));
+  }
+  assert.match(installer, /bootstrap-credentials\/volt\.env/);
+  assert.match(installer, /stat -c '%u:%a'/);
+  assert.match(installer, /rm -f "\$credential_file"/);
+  assert.doesNotMatch(installer, /\/opt\/exocortex\/kernel\/\.env/);
 });

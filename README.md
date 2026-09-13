@@ -6,8 +6,10 @@ Volt — локальное зашифрованное хранилище Exocor
 Production-релиз включает Compose-конфигурацию и pinned-версию локального
 Updater. Проверенный bootstrap размещает их в `/opt/volt`, создаёт
 root-owned secret-файлы, control token и socket groups и регистрирует `head=volt`.
-Если Kernel установлен на том же VPS, его URL и service token импортируются
-автоматически. Вручную задаются только Access Key и удалённые Kernel credentials,
+Если Kernel установлен на том же VPS, его installer заранее создаёт одноразовый
+root-only handoff; Volt импортирует и удаляет только свой файл, не читая Kernel
+`.env`. Для уже установленного Kernel сначала выполните `sudo kernel-install
+credentials`. Вручную задаются только Access Key и удалённые Kernel credentials,
 когда локального Kernel нет.
 
 После установки можно создать в Saturn pipeline **Volt ZIP + personal.volt
@@ -73,17 +75,21 @@ Access Key в защищённом файле через `VOLT_ACCESS_KEY_FILE`;
 недоступным до ввода действующего Access Key. Один `VOLT_DEVICE_KEY_FILE`
 разблокировку не выполняет.
 
-Интерфейс: `http://127.0.0.1:18184`. Для production используйте HTTPS reverse
-proxy, `VOLT_SECURE_COOKIES=true`, внешний read-only secret mount для
+Интерфейс: `http://127.0.0.1:18184`. В production используйте только общий
+серверный Nginx для HTTPS-маршрутизации, `VOLT_SECURE_COOKIES=true` и внешний read-only secret mount для
 Access Key. Kernel и Volt могут работать на разных серверах: в
 Settings → Security интерфейса Kernel укажите HTTPS URL Volt и общий токен, а
 затем задайте то же значение в Settings интерфейса Volt. Volt сохраняет только
 verifier, поэтому после сохранения токен нельзя посмотреть — только заменить.
 Прямой listener по-прежнему публикуется только на loopback; доступ между
-серверами проходит через HTTPS reverse proxy.
+серверами проходит через серверный Nginx. Volt не поставляет и не запускает
+собственный Nginx. Coturn не применяется: текущему HTTP/API-трафику он не нужен;
+только отдельный будущий WebRTC NAT-traversal кейс может потребовать
+самостоятельного архитектурного решения о TURN.
 
 Публичный HTTPS virtual host показывает locked/login UI с любого клиентского
-IP. Данные и управляющие API доступны только после проверки Access Key и через
+IP. `OPERATOR_CIDR`, VPN prerequisite и source-IP allow-list запрещены. Данные
+и управляющие API доступны только после проверки Access Key и через
 защищённую cookie-сессию. Включите из release bundle
 `/opt/volt/nginx.security.conf`; он скрывает внутренние callback/Neptune routes
 и probe paths, но намеренно не содержит source-IP `allow`/`deny` ACL.
@@ -111,19 +117,22 @@ grants. Старые `VOLT_SERVICE_TOKEN` после обновления бол
 
 ## Production-установка и обновления
 
-Запустите bootstrap из репозитория; без `--version` он сам выбирает последний
-стабильный `volt-v*` релиз:
+Запустите bootstrap конкретного immutable-релиза, заменив `X.Y.Z`:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/psewdon1m-exocortex/volt/main/scripts/bootstrap.sh | sudo sh
+curl -fsSL https://github.com/psewdon1m-exocortex/volt/releases/download/volt-vX.Y.Z/bootstrap.sh | sudo sh
 sudoedit /opt/volt/.env
 sudo volt-install
 ```
 
-На чистом сервере bootstrap получает `volt.pem` из выбранного HTTPS-релиза,
-проверяет им подпись manifest и закрепляет ключ в
-`/etc/exocortex/release-trust/volt.pem`; существующий ключ автоматически не
-заменяется. Затем проверяется SHA-256 архива до распаковки. В release bundle уже находятся
+Закрытый ключ подписи Volt хранится только в GitHub Secrets и доступен только
+защищённому release job. CI извлекает публичную часть и встраивает только её в
+versioned `bootstrap.sh`. На чистом сервере bootstrap создаёт
+`/etc/exocortex/release-trust/volt.pem`, проверяет подпись manifest до доверия
+его URL и digest и готовит только Volt и его mode-`0600` `.env`; существующий
+несовпадающий ключ автоматически не заменяется. `scp`, ручная сверка
+release-key fingerprint и отдельная подготовка публичного ключа не применяются.
+Затем проверяется SHA-256 архива до распаковки. В release bundle уже находятся
 зафиксированные binary/unit/installer Updater; установщик не скачивает
 исполняемый файл во время привилегированного шага и не требует вручную создавать
 `UPDATER_CONTROL_TOKEN`, GID или token-файлы. Повторный `sudo volt-install`

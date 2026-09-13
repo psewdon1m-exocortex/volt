@@ -18,7 +18,8 @@ pinned_updater_version="$(tr -d '[:space:]' < "$root/.release/updater.version")"
   exit 4
 }
 [[ -f "$updater_dir/install.sh" && -f "$updater_dir/updater-linux-amd64" && \
-   -f "$updater_dir/systemd/updater.service" && -f "$updater_dir/release-trust/updater.pem" ]] || {
+   -f "$updater_dir/systemd/updater.service" && -f "$updater_dir/release-trust/updater.pem" && \
+   -f "$updater_dir/release-trust/neptune.pem" && -f "$updater_dir/release-trust/gryphon.pem" ]] || {
   echo "Verified Updater install bundle is incomplete" >&2
   exit 5
 }
@@ -40,7 +41,6 @@ bundle="$root/$output/volt-${version}-compose.tar.gz"
 tar -czf "$bundle" -C "$stage" .
 bundle_sha="$(sha256sum "$bundle" | awk '{print $1}')"
 printf '%s  %s\n' "$bundle_sha" "$(basename "$bundle")" > "$bundle.sha256"
-install -m 0755 "$root/scripts/bootstrap.sh" "$root/$output/bootstrap.sh"
 cat > "$root/$output/volt-release.json" <<EOF
 {
   "schema_version": 1,

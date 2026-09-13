@@ -5,7 +5,7 @@ umask 077
 action=${1:-install}
 service_id=volt
 target=${VOLT_INSTALL_DIR:-/opt/volt}
-script_dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+script_dir=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)
 env_file=$target/.env
 
 fail() {
@@ -15,11 +15,6 @@ fail() {
 
 get_env() {
   sed -n "s/^$1=//p" "$env_file" | tail -n 1
-}
-
-get_env_from() {
-  source_file=$1; source_key=$2
-  sed -n "s/^$source_key=//p" "$source_file" | tail -n 1
 }
 
 set_env() {
@@ -41,21 +36,30 @@ random_hex() {
   openssl rand -hex "$1"
 }
 
-copy_local_kernel_bootstrap() {
-  kernel_env=/opt/exocortex/kernel/.env
-  [ -r "$kernel_env" ] || return 0
+import_kernel_bootstrap_credentials() {
+  credential_file=/etc/exocortex/bootstrap-credentials/volt.env
   current_url=$(get_env KERNEL_URL)
   current_token=$(get_env KERNEL_SERVICE_TOKEN)
+  needs_url=false; needs_token=false
   case "$current_url" in ""|*CHANGE_ME*|*replace-me*|*.example.*)
-    local_url=$(get_env_from "$kernel_env" KERNEL_URL)
-    [ -n "$local_url" ] && set_env KERNEL_URL "$local_url"
-    ;;
+    needs_url=true ;;
   esac
   case "$current_token" in ""|CHANGE_ME*|change-*|replace-*)
-    local_token=$(get_env_from "$kernel_env" KERNEL_SERVICE_TOKEN)
-    [ -n "$local_token" ] && set_env KERNEL_SERVICE_TOKEN "$local_token"
-    ;;
+    needs_token=true ;;
   esac
+  [ "$needs_url" = true ] || [ "$needs_token" = true ] || return 0
+  [ -f "$credential_file" ] && [ ! -L "$credential_file" ] || return 0
+  [ "$(stat -c '%u:%a' "$credential_file" 2>/dev/null)" = "0:600" ] || fail "$credential_file must be root-owned with mode 0600"
+  handoff_url=$(sed -n 's/^KERNEL_URL=//p' "$credential_file" | tail -n 1)
+  handoff_token=$(sed -n 's/^KERNEL_SERVICE_TOKEN=//p' "$credential_file" | tail -n 1)
+  case "$handoff_url" in https://*.*) ;; *) fail "Kernel bootstrap credential has an invalid URL" ;; esac
+  case "$handoff_url" in *CHANGE_ME*|*.example.*) fail "Kernel bootstrap credential still contains an example URL" ;; esac
+  [ "${#handoff_token}" -ge 24 ] || fail "Kernel bootstrap credential has an invalid token"
+  case "$handoff_token" in CHANGE_ME*|change-*|replace-*) fail "Kernel bootstrap credential still contains a placeholder token" ;; esac
+  [ "$needs_url" = false ] || set_env KERNEL_URL "$handoff_url"
+  [ "$needs_token" = false ] || set_env KERNEL_SERVICE_TOKEN "$handoff_token"
+  rm -f "$credential_file"
+  unset handoff_token
 }
 
 install_command() {
@@ -78,13 +82,16 @@ copy_release_files() {
   done
   chmod 0755 "$target/install.sh"
 
-  for name in install.sh updater-linux-amd64 systemd/updater.service; do
+  for name in install.sh updater-linux-amd64 systemd/updater.service release-trust/updater.pem release-trust/neptune.pem release-trust/gryphon.pem; do
     [ -f "$script_dir/updater/$name" ] || fail "release bundle is missing updater/$name"
   done
   if [ "$script_dir" != "$target" ]; then
-    install -d -m 0755 "$target/updater/systemd"
+    install -d -m 0755 "$target/updater/systemd" "$target/updater/release-trust"
     install -m 0755 "$script_dir/updater/install.sh" "$script_dir/updater/updater-linux-amd64" "$target/updater/"
     install -m 0644 "$script_dir/updater/systemd/updater.service" "$target/updater/systemd/updater.service"
+    for service in updater neptune gryphon; do
+      install -m 0644 "$script_dir/updater/release-trust/$service.pem" "$target/updater/release-trust/$service.pem"
+    done
   fi
 }
 
@@ -173,7 +180,7 @@ prepare_config() {
     created=1
   fi
   chmod 0600 "$env_file"
-  copy_local_kernel_bootstrap
+  import_kernel_bootstrap_credentials
   prepare_updater_mount
   prepare_volt_secrets
   prepare_neptune_mounts
