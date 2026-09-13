@@ -1,5 +1,9 @@
 # Volt API v1
 
+This document specializes [Part 07 — security and exposure
+control](../../.docs/PART_07_SECURITY_AND_EXPOSURE_CONTROL.md); that central
+contract remains authoritative.
+
 Операторские endpoints используют HttpOnly `volt_session` cookie и same-origin
 mutation policy. Machine endpoint принимает только общий Bearer token Kernel.
 Все ответы API отправляются с `Cache-Control: no-store`.

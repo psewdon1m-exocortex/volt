@@ -1,5 +1,18 @@
 # Releasing Volt
 
+This document specializes [Part 05 — CI/CD and release
+security](../.docs/PART_05_CI_RELEASES_AND_LOCAL_UPDATES.md) for this service. If
+the two documents differ, Part 05 is authoritative.
+
+Volt follows SemVer from the initial `0.0.1`. A plain tag such as `v0.0.1`
+invokes verification-only CI and must not publish or mutate a release; only
+`volt-vMAJOR.MINOR.PATCH` may invoke the release workflow.
+
+> Current implementation gap (2026-09-13): `ci.yml` does not yet listen to
+> plain `v*` tags. A separate CI change is required before a plain tag can be
+> used as verification evidence; qualified Volt releases remain gated by the
+> protected release workflow.
+
 1. Update `package.json` and `package-lock.json` to the same semantic version.
 2. Keep `.release/updater.version` pinned to an existing checksummed Updater
    release.

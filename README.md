@@ -1,5 +1,21 @@
 # Volt
 
+> Documentation authority: the workspace-wide [Part 00](../.docs/PART_00_SYSTEM_UNIFICATION_SPECIFICATION.md)
+> and its applicable Parts are normative. This repository documents
+> Volt-specific details only; a conflict is corrected here and a material
+> implementation difference follows the Part 00 divergence protocol.
+
+## Required pre-push gate
+
+After native checks and before every push, complete the checks required by
+[Part 06 — Unified acceptance checklist](../.docs/PART_06_UNIFIED_ACCEPTANCE_CHECKLIST.md) and run the versioned policy in
+`.github/pre-push-gate.json` through `scripts/pre-push-gate.py`. CI repeats the
+gate on `main`. Security is always reviewed; backup/restore, updater, embedded
+Documentation and affected technical docs are reviewed when relevant. Apply
+SEO/GEO checks to intentionally public/indexable surfaces and concealment,
+crawler and probe-resistance checks to private or authenticated surfaces.
+Every area requires `PASS` evidence or a reasoned `N/A`.
+
 Volt — локальное зашифрованное хранилище Exocortex и единственный источник значений
 для ссылок `volt://<entry-id>/<value-position>` в Kernel Register.
 
@@ -122,7 +138,10 @@ grants. Старые `VOLT_SERVICE_TOKEN` после обновления бол
 ```bash
 curl -fsSL https://github.com/psewdon1m-exocortex/volt/releases/download/volt-vX.Y.Z/bootstrap.sh | sudo sh
 sudoedit /opt/volt/.env
+sudo chmod 600 /opt/volt/.env
 sudo volt-install
+sudo volt-install status
+curl -fsS http://127.0.0.1:18184/api/v1/health
 ```
 
 Закрытый ключ подписи Volt хранится только в GitHub Secrets и доступен только
