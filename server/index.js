@@ -63,7 +63,7 @@ return createApp({
   sessionKey: deriveSessionKey(vault.masterKey),
   accessKey,
   appVersion,
-  kernelUrlSeed: process.env.VOLT_KERNEL_URL || "http://127.0.0.1:18180",
+  kernelUrlSeed: process.env.KERNEL_URL || process.env.VOLT_KERNEL_URL || "http://127.0.0.1:18180",
   kernelServiceUrl: process.env.KERNEL_URL || "",
   kernelServiceToken: process.env.KERNEL_SERVICE_TOKEN || "",
   kernelToken,

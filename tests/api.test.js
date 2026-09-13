@@ -76,6 +76,14 @@ test("Volt release discovery, updater install, job control and rollback restore 
 
   const unlocked = await fetch(`${base}/api/v1/session`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ access_key: "correct horse battery staple" }) });
   const cookie = unlocked.headers.getSetCookie()[0].split(";")[0];
+  const kernelAccess = await fetch(`${base}/api/v1/settings/kernel-access`, { headers: { cookie } });
+  const kernelStatus = await kernelAccess.json();
+  assert.equal(kernelStatus.configured, false);
+  assert.equal(kernelStatus.url, "https://kernel.example.com");
+  assert.equal(kernelStatus.reachable, true);
+  assert.equal(kernelStatus.identity, "exocortex-kernel");
+  assert.equal(kernelStatus.error, null);
+  assert.match(kernelStatus.checked_at, /^\d{4}-\d{2}-\d{2}T/);
   const checked = await fetch(`${base}/api/v1/update/check`, { method: "POST", headers: { cookie, "content-type": "application/json" }, body: "{}" });
   assert.equal(checked.status, 200);
   assert.deepEqual(await checked.json(), {

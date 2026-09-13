@@ -9,7 +9,7 @@ import multer from "multer";
 
 import { buildBackupArchive, MAX_COMPRESSED_BYTES, parseBackupArchive } from "./backup.js";
 import { generateValue } from "./generators.js";
-import { checkRegisteredRelease } from "./release-client.js";
+import { checkRegisteredRelease, resolveRepositoryUrl } from "./release-client.js";
 import {
   createSessionToken,
   hashAccessKey,
@@ -56,26 +56,39 @@ function normalizeKernelUrl(value) {
   }
 }
 
-async function probeKernel(url) {
-  try {
-    const response = await fetch(`${url}/api/v1/health`, {
-      headers: { Accept: "application/json" },
-      signal: AbortSignal.timeout(2_500),
-    });
-    const body = await response.json().catch(() => ({}));
-    const reachable = response.ok && body?.status === "ok";
+async function probeKernel(url, token, fetchImpl, timeoutMs) {
+  const checkedAt = new Date().toISOString();
+  if (!url || !token) {
     return {
-      reachable,
-      identity: reachable ? String(body.service ?? body.schema ?? "kernel") : null,
-      checked_at: new Date().toISOString(),
-      error: reachable ? null : `Kernel returned HTTP ${response.status}`,
+      reachable: false,
+      identity: null,
+      checked_at: checkedAt,
+      error: "Kernel Register access is not configured",
+    };
+  }
+  try {
+    await resolveRepositoryUrl({
+      kernelUrl: url,
+      kernelServiceToken: token,
+      key: "repositories.volt.url",
+      version: "settings-probe",
+      fetchImpl,
+      timeoutMs,
+    });
+    return {
+      reachable: true,
+      identity: "exocortex-kernel",
+      checked_at: checkedAt,
+      error: null,
     };
   } catch (error) {
     return {
       reachable: false,
       identity: null,
-      checked_at: new Date().toISOString(),
-      error: error instanceof Error ? error.message : "Kernel is unavailable",
+      checked_at: checkedAt,
+      error: error instanceof Error && error.message !== "fetch failed"
+        ? error.message
+        : "Kernel Register is unreachable",
     };
   }
 }
@@ -88,7 +101,7 @@ export function createApp({
   kernelUrlSeed = "http://127.0.0.1:18180",
   kernelServiceUrl = "",
   kernelServiceToken = "",
-  appVersion = "0.1.3",
+  appVersion = "0.1.4",
   secureCookies = false,
   trustProxy = false,
   distDir = null,
@@ -109,8 +122,11 @@ export function createApp({
     store.setSetting("kernel_token_hash", kernelTokenHash(kernelToken));
     store.audit({ actor: "system:migration", action: "kernel_access.configure" });
   }
-  if (!store.getSetting("kernel_url")) {
-    const kernelUrl = normalizeKernelUrl(kernelUrlSeed);
+  const configuredKernelUrl = normalizeKernelUrl(kernelServiceUrl);
+  const storedKernelUrl = store.getSetting("kernel_url");
+  const legacyKernelUrls = new Set(["http://127.0.0.1:18180", "http://host.docker.internal:18180"]);
+  if (!storedKernelUrl || (configuredKernelUrl && legacyKernelUrls.has(storedKernelUrl))) {
+    const kernelUrl = configuredKernelUrl ?? normalizeKernelUrl(kernelUrlSeed);
     if (kernelUrl) store.setSetting("kernel_url", kernelUrl);
   }
 
@@ -198,7 +214,7 @@ export function createApp({
   }
 
   const checkRelease = (service, currentVersion) => checkRegisteredRelease({
-    kernelUrl: kernelServiceUrl,
+    kernelUrl: store.getSetting("kernel_url") ?? kernelServiceUrl,
     kernelServiceToken,
     service,
     currentVersion,
@@ -206,6 +222,12 @@ export function createApp({
     fetchImpl: releaseFetch,
     timeoutMs: updateCheckTimeoutMs,
   });
+  const probeConfiguredKernel = (url = store.getSetting("kernel_url") ?? kernelServiceUrl) => probeKernel(
+    url,
+    kernelServiceToken,
+    releaseFetch,
+    updateCheckTimeoutMs,
+  );
 
   app.get("/api/v1/health", (_request, response) => {
     response.json({ status: "ok", service: "volt", schema: "volt.health.v1" });
@@ -528,11 +550,11 @@ export function createApp({
   });
 
   app.get("/api/v1/settings/kernel-access", async (_request, response) => {
-    const url = store.getSetting("kernel_url") ?? "http://127.0.0.1:18180";
+    const url = store.getSetting("kernel_url") ?? kernelServiceUrl;
     response.json({
       configured: Boolean(store.getSetting("kernel_token_hash")),
       url,
-      ...(await probeKernel(url)),
+      ...(await probeConfiguredKernel(url)),
     });
   });
   app.put("/api/v1/settings/kernel-access", requireSameOrigin, (request, response, next) => {
@@ -542,11 +564,11 @@ export function createApp({
       if (token !== undefined && !validKernelToken(token)) {
         throw domainError(400, "INVALID_KERNEL_TOKEN", "Kernel token must contain between 32 and 512 non-placeholder characters");
       }
-      let url = store.getSetting("kernel_url") ?? "http://127.0.0.1:18180";
+      let url = store.getSetting("kernel_url") ?? kernelServiceUrl;
       if (requestedUrl !== undefined) {
         const normalized = normalizeKernelUrl(requestedUrl);
         if (!normalized) throw domainError(400, "KERNEL_URL_INVALID", "Kernel URL must be an HTTP(S) authority without credentials, path, query or fragment");
-        const status = await probeKernel(normalized);
+        const status = await probeConfiguredKernel(normalized);
         if (!status.reachable) throw domainError(409, "KERNEL_UNREACHABLE", "The new Kernel URL did not return a healthy Kernel response");
         url = normalized;
       }
@@ -559,7 +581,7 @@ export function createApp({
       response.json({
         configured: Boolean(store.getSetting("kernel_token_hash")),
         url,
-        ...(await probeKernel(url)),
+        ...(await probeConfiguredKernel(url)),
       });
     }).catch(next);
   });
