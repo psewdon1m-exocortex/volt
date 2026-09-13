@@ -2,7 +2,7 @@
 
 - Date: 2026-09-08
 - Decision: adopt the complete interface and interaction contract from
-  [Part 01](../../.docs/PART_01_INTERFACE_AND_INTERACTION_UNIFICATION.md).
+  [Part 01](https://github.com/psewdon1m-exocortex/general/blob/main/PART_01_INTERFACE_AND_INTERACTION_UNIFICATION.md).
 - Operator choice: full unification, including compatible API and persisted
   presentation-setting changes.
 - Data boundary: encrypted entries, immutable revisions and audit data are not

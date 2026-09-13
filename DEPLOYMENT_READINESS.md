@@ -1,10 +1,10 @@
 # volt deployment and recovery contract
 
 This service-local record is subordinate to the coordinated
-[Part 11 deployment profile](../.docs/PART_11_INITIAL_MULTI_SERVICE_DEPLOYMENT.md)
+[Part 11 deployment profile](https://github.com/psewdon1m-exocortex/general/blob/main/PART_11_INITIAL_MULTI_SERVICE_DEPLOYMENT.md)
 and the shared-agent contracts in
-[Part 09](../.docs/PART_09_SERVICE_AGENTS_DEPLOYMENT_AND_LIFECYCLE.md) and
-[Part 10](../.docs/PART_10_SERVICE_AGENTS_UI_AND_OPERATOR_WORKFLOWS.md).
+[Part 09](https://github.com/psewdon1m-exocortex/general/blob/main/PART_09_SERVICE_AGENTS_DEPLOYMENT_AND_LIFECYCLE.md) and
+[Part 10](https://github.com/psewdon1m-exocortex/general/blob/main/PART_10_SERVICE_AGENTS_UI_AND_OPERATOR_WORKFLOWS.md).
 
 Access Key unlock is mandatory. A protected Access Key file is an explicitly supplied key; a device wrapper alone never authorizes startup. Without a supplied key, the locked UI remains reachable and readiness is unavailable until login. Recovery ZIP v3 contains portable personal.volt plus validated logical state; clean restore opens the archived vault with its Access Key and rewraps entries into the target vault. Saturn retains both backups/volt archives and an independent volt/personal.volt mirror. Settings can initialize both Neptune pipelines even when the helper is absent.
 
