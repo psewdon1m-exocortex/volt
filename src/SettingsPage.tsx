@@ -180,7 +180,15 @@ export function SettingsPage({ settings, onSettings, onLocked, toast }: { settin
     if (!newKey.length) return toast("Enter a new Access Key", "error");
     if (newKey !== confirmKey) return toast("The new Access Keys do not match", "error");
     setBusy("access");
-    try { await api.changeAccessKey(currentKey, newKey); toast("Access Key changed. Active sessions have been closed."); onLocked(); }
+    try {
+      const result = await api.changeAccessKey(currentKey, newKey);
+      if (result.startup_key_updated === false) {
+        toast("Access Key changed. The startup key file could not be synchronized, so Volt will request the key after a server restart.", "error");
+      } else {
+        toast("Access Key changed. Active sessions have been closed.");
+      }
+      onLocked();
+    }
     catch (error) { toast(errorMessage(error), "error"); }
     finally { setBusy(""); }
   }

@@ -57,9 +57,49 @@ test("existing vault databases gain activity ranking columns without rewriting e
     const columns = store.db.prepare("PRAGMA table_info(entries)").all().map((column) => column.name);
     assert.equal(columns.includes("activity_score"), true);
     assert.equal(columns.includes("last_interacted_at"), true);
+    assert.equal(store.db.prepare("PRAGMA user_version").get().user_version, 2);
+    assert.deepEqual(
+      store.db.prepare("SELECT scope, version FROM vault_migrations ORDER BY scope, version").all()
+        .map((row) => ({ ...row })),
+      [{ scope: "store", version: 2 }],
+    );
   } finally {
     store.close();
     rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test("a failed schema migration rolls back every DDL and settings change", () => {
+  const directory = mkdtempSync(path.join(os.tmpdir(), "volt-schema-rollback-"));
+  const filename = path.join(directory, "volt.sqlite");
+  const legacy = new DatabaseSync(filename);
+  legacy.exec(`
+    CREATE TABLE entries (
+      id TEXT PRIMARY KEY,
+      current_revision_id TEXT,
+      position INTEGER NOT NULL DEFAULT 0,
+      wrapped_key TEXT NOT NULL,
+      key_nonce TEXT NOT NULL,
+      key_tag TEXT NOT NULL,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      deleted_at TEXT
+    );
+    CREATE TABLE vault_migrations(scope TEXT NOT NULL);
+  `);
+  legacy.close();
+  try {
+    assert.throws(() => new VoltStore({ filename, masterKey: randomBytes(32) }));
+    const inspected = new DatabaseSync(filename, { readOnly: true });
+    const columns = inspected.prepare("PRAGMA table_info(entries)").all().map((column) => column.name);
+    assert.equal(columns.includes("activity_score"), false);
+    assert.equal(columns.includes("last_interacted_at"), false);
+    assert.equal(inspected.prepare(`
+      SELECT 1 AS present FROM sqlite_master WHERE type = 'table' AND name = 'settings'
+    `).get(), undefined);
+    inspected.close();
+  } finally {
+    rmSync(directory, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
   }
 });
 

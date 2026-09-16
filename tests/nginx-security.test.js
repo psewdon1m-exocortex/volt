@@ -26,11 +26,14 @@ test("clean-host bootstrap pins exact embedded release trust", () => {
 
 test("installer preserves Updater trust and never reads Kernel environment", () => {
   const installer = fs.readFileSync(new URL("../install.sh", import.meta.url), "utf8");
+  const compose = fs.readFileSync(new URL("../compose.production.yaml", import.meta.url), "utf8");
   for (const service of ["updater", "neptune", "gryphon"]) {
     assert.match(installer, new RegExp(`release-trust/${service}\\.pem`));
   }
   assert.match(installer, /bootstrap-credentials\/volt\.env/);
   assert.match(installer, /stat -c '%u:%a'/);
   assert.match(installer, /rm -f "\$credential_file"/);
+  assert.match(installer, /chmod 0660 "\$access_file"/);
+  assert.match(compose, /target: \/run\/secrets\/volt-access-key\s+read_only: false/);
   assert.doesNotMatch(installer, /\/opt\/exocortex\/kernel\/\.env/);
 });

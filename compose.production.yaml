@@ -36,7 +36,7 @@ services:
       - type: bind
         source: "${VOLT_ACCESS_KEY_HOST_PATH:?Set VOLT_ACCESS_KEY_HOST_PATH}"
         target: /run/secrets/volt-access-key
-        read_only: true
+        read_only: false
       - type: bind
         source: "${NEPTUNE_SOCKET_DIR:-/run/neptune}"
         target: /run/neptune

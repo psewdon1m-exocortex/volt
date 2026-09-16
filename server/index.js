@@ -11,6 +11,11 @@ import { VoltStore } from "./store.js";
 import { createNeptuneClient } from "./neptune-client.js";
 import { createUpdaterClient } from "./updater-client.js";
 import { createPortableVault, migrateLegacyVault, unlockPortableVault } from "./vault-file.js";
+import {
+  legacyInstallerAccessKey,
+  readAccessKeyFile,
+  writeAccessKeyFile,
+} from "./access-key-file.js";
 
 const currentDir = path.dirname(fileURLToPath(import.meta.url));
 const rootDir = path.resolve(currentDir, "..");
@@ -22,9 +27,18 @@ const deviceKeyFile = process.env.VOLT_DEVICE_KEY_FILE || process.env.VOLT_MASTE
 const legacyMasterKeyFile = process.env.VOLT_LEGACY_MASTER_KEY_FILE || process.env.VOLT_MASTER_KEY_FILE;
 const deviceKey = deviceKeyFile ? readMasterKey(path.resolve(deviceKeyFile)) : null;
 const legacyMasterKey = legacyMasterKeyFile ? readMasterKey(path.resolve(legacyMasterKeyFile)) : null;
-const bootstrapAccessKey = process.env.VOLT_ACCESS_KEY_FILE
-  ? fs.readFileSync(path.resolve(process.env.VOLT_ACCESS_KEY_FILE), "utf8")
-  : process.env.VOLT_ACCESS_KEY;
+const accessKeyFilename = process.env.VOLT_ACCESS_KEY_FILE
+  ? path.resolve(process.env.VOLT_ACCESS_KEY_FILE)
+  : null;
+let bootstrapAccessKey = process.env.VOLT_ACCESS_KEY;
+if (accessKeyFilename) {
+  try {
+    bootstrapAccessKey = readAccessKeyFile(accessKeyFilename);
+  } catch (error) {
+    bootstrapAccessKey = null;
+    console.error(`Could not read the startup Access Key; Volt will start locked (${error.code ?? "read failed"})`);
+  }
+}
 const updaterControlToken = process.env.UPDATER_CONTROL_TOKEN_FILE
   ? fs.readFileSync(path.resolve(process.env.UPDATER_CONTROL_TOKEN_FILE), "utf8").trim()
   : process.env.UPDATER_CONTROL_TOKEN || "";
@@ -35,61 +49,103 @@ let vault;
 let store;
 const host = process.env.VOLT_LISTEN_HOST || "127.0.0.1";
 const port = Number(process.env.VOLT_PORT || 18184);
-function unlockRuntime(accessKey) {
-if (fs.existsSync(vaultFilename)) {
-  vault = unlockPortableVault({ filename: vaultFilename, accessKey, deviceKey });
-} else if (fs.existsSync(legacyFilename)) {
-  if (!legacyMasterKey) throw new Error("VOLT_LEGACY_MASTER_KEY_FILE is required to migrate volt.sqlite");
-  vault = migrateLegacyVault({
-    legacyFilename,
-    filename: vaultFilename,
-    accessKey,
-    legacyMasterKey,
-    deviceKey: deviceKey || legacyMasterKey,
-  });
-  console.warn(`Migrated legacy Volt storage to ${vaultFilename}; the source database was retained for rollback`);
-} else {
-  vault = createPortableVault({ filename: vaultFilename, accessKey, deviceKey });
+function unlockRuntime(accessKey, { legacyAccessKey = null, synchronizeAccessKey = true } = {}) {
+  let nextVault;
+  let nextStore;
+  try {
+    if (fs.existsSync(vaultFilename)) {
+      nextVault = unlockPortableVault({
+        filename: vaultFilename,
+        accessKey,
+        legacyAccessKey,
+        deviceKey,
+      });
+    } else if (fs.existsSync(legacyFilename)) {
+      if (!legacyMasterKey) throw new Error("VOLT_LEGACY_MASTER_KEY_FILE is required to migrate volt.sqlite");
+      nextVault = migrateLegacyVault({
+        legacyFilename,
+        filename: vaultFilename,
+        accessKey,
+        legacyMasterKey,
+        deviceKey: deviceKey || legacyMasterKey,
+      });
+      console.warn(`Migrated legacy Volt storage to ${vaultFilename}; the source database was retained for rollback`);
+    } else {
+      nextVault = createPortableVault({ filename: vaultFilename, accessKey, deviceKey });
+    }
+    const effectiveAccessKey = nextVault.usedLegacyAccessKey ? legacyAccessKey : accessKey;
+    validateRuntimeConfig({
+      accessKey: effectiveAccessKey,
+      masterKey: nextVault.masterKey,
+      kernelToken,
+      requireAccessKey: nextVault.created || nextVault.migrated,
+    });
+
+    nextStore = new VoltStore({
+      filename: vaultFilename,
+      masterKey: nextVault.masterKey,
+      auditRetention: Number(process.env.VOLT_AUDIT_RETENTION || 10_000),
+    });
+    const nextApp = createApp({
+      store: nextStore,
+      sessionKey: deriveSessionKey(nextVault.masterKey),
+      accessKey: effectiveAccessKey,
+      persistAccessKey: accessKeyFilename
+        ? (nextAccessKey) => writeAccessKeyFile(accessKeyFilename, nextAccessKey)
+        : null,
+      appVersion,
+      kernelUrlSeed: process.env.KERNEL_URL || process.env.VOLT_KERNEL_URL || "http://127.0.0.1:18180",
+      kernelServiceUrl: process.env.KERNEL_URL || "",
+      kernelServiceToken: process.env.KERNEL_SERVICE_TOKEN || "",
+      kernelToken,
+      secureCookies: process.env.VOLT_SECURE_COOKIES === "true",
+      trustProxy: trustedProxies(process.env.VOLT_TRUSTED_PROXIES),
+      distDir: path.join(rootDir, "dist"),
+      neptuneClient: createNeptuneClient({
+        socketPath: process.env.NEPTUNE_SOCKET_PATH || "/run/neptune/neptuned.sock",
+        projectId: process.env.NEPTUNE_PROJECT_ID || "volt",
+        controlTokenFile: process.env.NEPTUNE_CONTROL_TOKEN_FILE,
+      }),
+      updaterClient: createUpdaterClient({
+        socketPath: process.env.UPDATER_SOCKET_PATH || "/run/exocortex/updater.sock",
+        controlToken: updaterControlToken,
+        headId: process.env.UPDATER_HEAD_ID || process.env.UPDATER_REGISTERED_HEAD_ID || "volt",
+      }),
+      updaterControlToken,
+      neptuneExportTokenFile: process.env.NEPTUNE_EXPORT_TOKEN_FILE,
+      neptuneExportUrl: `http://127.0.0.1:${port}/api/v1/internal/neptune/backup`,
+    });
+    if (accessKeyFilename && (synchronizeAccessKey || nextVault.usedLegacyAccessKey)) {
+      try {
+        writeAccessKeyFile(accessKeyFilename, effectiveAccessKey);
+      } catch (error) {
+        console.error(`personal.volt was unlocked, but the startup Access Key file could not be synchronized (${error.code ?? "write failed"})`);
+      }
+    }
+    vault = nextVault;
+    store = nextStore;
+    return nextApp;
+  } catch (error) {
+    try { nextStore?.close(); } catch {}
+    nextVault?.masterKey?.fill(0);
+    throw error;
+  }
 }
-validateRuntimeConfig({ accessKey, masterKey: vault.masterKey, kernelToken, requireAccessKey: vault.created || vault.migrated });
-
-store = new VoltStore({
-  filename: vaultFilename,
-  masterKey: vault.masterKey,
-  auditRetention: Number(process.env.VOLT_AUDIT_RETENTION || 10_000),
-});
-return createApp({
-  store,
-  sessionKey: deriveSessionKey(vault.masterKey),
-  accessKey,
-  appVersion,
-  kernelUrlSeed: process.env.KERNEL_URL || process.env.VOLT_KERNEL_URL || "http://127.0.0.1:18180",
-  kernelServiceUrl: process.env.KERNEL_URL || "",
-  kernelServiceToken: process.env.KERNEL_SERVICE_TOKEN || "",
-  kernelToken,
-  secureCookies: process.env.VOLT_SECURE_COOKIES === "true",
-  trustProxy: trustedProxies(process.env.VOLT_TRUSTED_PROXIES),
-  distDir: path.join(rootDir, "dist"),
-  neptuneClient: createNeptuneClient({
-    socketPath: process.env.NEPTUNE_SOCKET_PATH || "/run/neptune/neptuned.sock",
-    projectId: process.env.NEPTUNE_PROJECT_ID || "volt",
-    controlTokenFile: process.env.NEPTUNE_CONTROL_TOKEN_FILE,
-  }),
-  updaterClient: createUpdaterClient({
-    socketPath: process.env.UPDATER_SOCKET_PATH || "/run/exocortex/updater.sock",
-    controlToken: updaterControlToken,
-    headId: process.env.UPDATER_HEAD_ID || process.env.UPDATER_REGISTERED_HEAD_ID || "volt",
-  }),
-  updaterControlToken,
-  neptuneExportTokenFile: process.env.NEPTUNE_EXPORT_TOKEN_FILE,
-  neptuneExportUrl: `http://127.0.0.1:${port}/api/v1/internal/neptune/backup`,
-});
-
+let initialApp = null;
+if (bootstrapAccessKey) {
+  try {
+    initialApp = unlockRuntime(bootstrapAccessKey, {
+      legacyAccessKey: legacyInstallerAccessKey(bootstrapAccessKey),
+      synchronizeAccessKey: false,
+    });
+  } catch (error) {
+    console.error(`Startup Access Key did not unlock personal.volt; Volt will start locked (${error.code ?? "unlock failed"})`);
+  }
 }
 const app = createLockedRuntime({
   unlock: unlockRuntime,
   distDir: path.join(rootDir, "dist"),
-  initialApp: bootstrapAccessKey ? unlockRuntime(bootstrapAccessKey) : null,
+  initialApp,
   trustProxy: trustedProxies(process.env.VOLT_TRUSTED_PROXIES),
 });
 

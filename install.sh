@@ -136,7 +136,10 @@ prepare_volt_secrets() {
   fi
   if [ -s "$access_file" ]; then
     chown root:volt-secrets "$access_file"
-    chmod 0640 "$access_file"
+    # The non-root Volt process updates this exact file after an in-app Access
+    # Key rotation. Directory ownership stays root-only and no sibling secret is
+    # exposed to the container.
+    chmod 0660 "$access_file"
     [ -z "$(get_env VOLT_ACCESS_KEY)" ] || set_env VOLT_ACCESS_KEY ""
   fi
   set_env VOLT_ACCESS_KEY_HOST_PATH "$access_file"

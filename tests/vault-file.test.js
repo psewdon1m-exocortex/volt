@@ -3,8 +3,10 @@ import { randomBytes } from "node:crypto";
 import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { DatabaseSync } from "node:sqlite";
 import test from "node:test";
 
+import { legacyInstallerAccessKey, writeAccessKeyFile } from "../server/access-key-file.js";
 import { hashAccessKey } from "../server/security.js";
 import { VoltStore } from "../server/store.js";
 import {
@@ -13,6 +15,56 @@ import {
   portableVaultInfo,
   unlockPortableVault,
 } from "../server/vault-file.js";
+
+test("a 0.1.5 vault and newline-terminated startup key migrate without breaking rollback readability", () => {
+  const directory = mkdtempSync(path.join(os.tmpdir(), "personal-volt-v1-migration-"));
+  const filename = path.join(directory, "personal.volt");
+  const accessKeyFilename = path.join(directory, "volt-access.key");
+  const accessKey = "legacy server access key";
+  try {
+    createPortableVault({ filename, accessKey }).masterKey.fill(0);
+    const legacy = new DatabaseSync(filename);
+    legacy.exec(`
+      UPDATE vault_header SET format_version = 1 WHERE singleton = 1;
+      DELETE FROM vault_migrations;
+      PRAGMA user_version = 1;
+    `);
+    legacy.close();
+    writeFileSync(accessKeyFilename, `${accessKey}\n`);
+
+    const startupValue = readFileSync(accessKeyFilename, "utf8");
+    assert.throws(() => unlockPortableVault({ filename, accessKey: startupValue }), /could not be unlocked/);
+    const opened = unlockPortableVault({
+      filename,
+      accessKey: startupValue,
+      legacyAccessKey: legacyInstallerAccessKey(startupValue),
+    });
+    assert.equal(opened.unlockedWith, "legacy-access-key");
+
+    const store = new VoltStore({ filename, masterKey: opened.masterKey });
+    const migrations = store.db.prepare(`
+      SELECT scope, version FROM vault_migrations ORDER BY scope, version
+    `).all().map((row) => ({ ...row }));
+    assert.deepEqual(migrations, [
+      { scope: "container", version: 1 },
+      { scope: "store", version: 2 },
+    ]);
+    store.close();
+
+    const info = portableVaultInfo(filename);
+    assert.equal(info.format_version, 1);
+    assert.equal(info.current_format_version, 2);
+    assert.equal(info.schema_version, 2);
+    const rollbackCompatible = unlockPortableVault({ filename, accessKey });
+    assert.equal(rollbackCompatible.unlockedWith, "access-key");
+    rollbackCompatible.masterKey.fill(0);
+
+    writeAccessKeyFile(accessKeyFilename, accessKey);
+    assert.equal(readFileSync(accessKeyFilename, "utf8"), accessKey);
+  } finally {
+    rmSync(directory, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+  }
+});
 
 test("personal.volt preserves exact Access Keys without length rules and survives rotation", () => {
   const directory = mkdtempSync(path.join(os.tmpdir(), "personal-volt-test-"));

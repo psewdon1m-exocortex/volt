@@ -11,7 +11,12 @@ import {
   unwrapEntryKey,
   rewrapEntryKey,
 } from "./crypto.js";
-import { portableVaultInfo, rotatePortableAccessKey, unlockPortableVault } from "./vault-file.js";
+import {
+  DATABASE_SCHEMA_VERSION,
+  portableVaultInfo,
+  rotatePortableAccessKey,
+  unlockPortableVault,
+} from "./vault-file.js";
 
 function isoNow() {
   return new Date().toISOString();
@@ -95,18 +100,32 @@ export class VoltStore {
     this.lastCpuUsage = process.cpuUsage();
     this.lastCpuAt = process.hrtime.bigint();
     this.db = new DatabaseSync(filename);
-    this.db.exec("PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON; PRAGMA secure_delete=ON; PRAGMA synchronous=FULL; PRAGMA busy_timeout=5000;");
-    this.#createSchema();
-    this.purgeExpiredEntries();
+    try {
+      this.db.exec("PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON; PRAGMA secure_delete=ON; PRAGMA synchronous=FULL; PRAGMA busy_timeout=5000;");
+      this.#createSchema();
+      this.purgeExpiredEntries();
+    } catch (error) {
+      this.db.close();
+      throw error;
+    }
   }
 
   #createSchema() {
-    this.db.exec(`
-      CREATE TABLE IF NOT EXISTS settings (
+    this.db.exec("BEGIN IMMEDIATE");
+    try {
+      this.db.exec(`
+        CREATE TABLE IF NOT EXISTS vault_migrations (
+          scope TEXT NOT NULL,
+          version INTEGER NOT NULL,
+          name TEXT NOT NULL,
+          applied_at TEXT NOT NULL,
+          PRIMARY KEY(scope, version)
+        ) STRICT;
+        CREATE TABLE IF NOT EXISTS settings (
         key TEXT PRIMARY KEY,
         value TEXT NOT NULL
-      );
-      CREATE TABLE IF NOT EXISTS entries (
+        );
+        CREATE TABLE IF NOT EXISTS entries (
         id TEXT PRIMARY KEY,
         current_revision_id TEXT,
         position INTEGER NOT NULL DEFAULT 0,
@@ -120,7 +139,7 @@ export class VoltStore {
         deleted_at TEXT,
         FOREIGN KEY (current_revision_id) REFERENCES entry_revisions(id)
       );
-      CREATE TABLE IF NOT EXISTS entry_revisions (
+        CREATE TABLE IF NOT EXISTS entry_revisions (
         id TEXT PRIMARY KEY,
         entry_id TEXT NOT NULL,
         revision_number INTEGER NOT NULL,
@@ -137,7 +156,7 @@ export class VoltStore {
         FOREIGN KEY (parent_revision_id) REFERENCES entry_revisions(id),
         FOREIGN KEY (source_revision_id) REFERENCES entry_revisions(id)
       );
-      CREATE TABLE IF NOT EXISTS audit_events (
+        CREATE TABLE IF NOT EXISTS audit_events (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         event_id TEXT NOT NULL UNIQUE,
         actor TEXT NOT NULL,
@@ -147,25 +166,47 @@ export class VoltStore {
         details_json TEXT,
         created_at TEXT NOT NULL
       );
-      CREATE INDEX IF NOT EXISTS idx_entries_position ON entries(deleted_at, position, updated_at DESC);
-      CREATE INDEX IF NOT EXISTS idx_revisions_entry ON entry_revisions(entry_id, revision_number DESC);
-      CREATE INDEX IF NOT EXISTS idx_audit_created ON audit_events(created_at DESC);
-    `);
-    const entryColumns = new Set(this.db.prepare("PRAGMA table_info(entries)").all().map((column) => column.name));
-    if (!entryColumns.has("activity_score")) this.db.exec("ALTER TABLE entries ADD COLUMN activity_score INTEGER NOT NULL DEFAULT 0");
-    if (!entryColumns.has("last_interacted_at")) this.db.exec("ALTER TABLE entries ADD COLUMN last_interacted_at TEXT");
-    // Service principals and field grants belonged to the retired direct-service
-    // API. Kernel is now the sole machine principal for secret resolution.
-    this.db.exec("DROP TABLE IF EXISTS grants; DROP TABLE IF EXISTS principals;");
-    if (!this.getSetting("auth_generation")) this.setSetting("auth_generation", "1");
-    if (!this.getSetting("appearance")) this.setSetting("appearance", "dark");
-    if (!this.getSetting("accent_color")) this.setSetting("accent_color", DEFAULT_ACCENT);
-    if (!this.getSetting("sidebar_mode")) this.setSetting("sidebar_mode", "fixed");
-    if (!this.getSetting("activity_ranking_enabled")) this.setSetting("activity_ranking_enabled", "0");
-    if (!this.getSetting("navigation_order")) this.setSetting("navigation_order", JSON.stringify(DEFAULT_NAVIGATION_ORDER));
-    if (!this.getSetting("settings_order")) this.setSetting("settings_order", JSON.stringify(DEFAULT_SETTINGS_ORDER));
-    if (!this.getSetting("dashboard_order")) this.setSetting("dashboard_order", JSON.stringify(DEFAULT_DASHBOARD_ORDER));
-    if (!this.getSetting("trash_retention_days")) this.setSetting("trash_retention_days", DEFAULT_TRASH_RETENTION_DAYS);
+        CREATE INDEX IF NOT EXISTS idx_entries_position ON entries(deleted_at, position, updated_at DESC);
+        CREATE INDEX IF NOT EXISTS idx_revisions_entry ON entry_revisions(entry_id, revision_number DESC);
+        CREATE INDEX IF NOT EXISTS idx_audit_created ON audit_events(created_at DESC);
+      `);
+      const entryColumns = new Set(this.db.prepare("PRAGMA table_info(entries)").all().map((column) => column.name));
+      if (!entryColumns.has("activity_score")) this.db.exec("ALTER TABLE entries ADD COLUMN activity_score INTEGER NOT NULL DEFAULT 0");
+      if (!entryColumns.has("last_interacted_at")) this.db.exec("ALTER TABLE entries ADD COLUMN last_interacted_at TEXT");
+      // Service principals and field grants belonged to the retired direct-service
+      // API. Kernel is now the sole machine principal for secret resolution.
+      this.db.exec("DROP TABLE IF EXISTS grants; DROP TABLE IF EXISTS principals;");
+      if (!this.getSetting("auth_generation")) this.setSetting("auth_generation", "1");
+      if (!this.getSetting("appearance")) this.setSetting("appearance", "dark");
+      if (!this.getSetting("accent_color")) this.setSetting("accent_color", DEFAULT_ACCENT);
+      if (!this.getSetting("sidebar_mode")) this.setSetting("sidebar_mode", "fixed");
+      if (!this.getSetting("activity_ranking_enabled")) this.setSetting("activity_ranking_enabled", "0");
+      if (!this.getSetting("navigation_order")) this.setSetting("navigation_order", JSON.stringify(DEFAULT_NAVIGATION_ORDER));
+      if (!this.getSetting("settings_order")) this.setSetting("settings_order", JSON.stringify(DEFAULT_SETTINGS_ORDER));
+      if (!this.getSetting("dashboard_order")) this.setSetting("dashboard_order", JSON.stringify(DEFAULT_DASHBOARD_ORDER));
+      if (!this.getSetting("trash_retention_days")) this.setSetting("trash_retention_days", DEFAULT_TRASH_RETENTION_DAYS);
+
+      const hasHeader = Boolean(this.db.prepare(`
+        SELECT 1 AS present FROM sqlite_master WHERE type = 'table' AND name = 'vault_header'
+      `).get()?.present);
+      const header = hasHeader
+        ? this.db.prepare("SELECT format_version FROM vault_header WHERE singleton = 1").get()
+        : null;
+      if (header) {
+        this.db.prepare(`
+          INSERT OR IGNORE INTO vault_migrations(scope, version, name, applied_at)
+          VALUES('container', ?, 'existing portable vault baseline', ?)
+        `).run(Number(header.format_version), isoNow());
+      }
+      this.db.prepare(`
+        INSERT OR IGNORE INTO vault_migrations(scope, version, name, applied_at)
+        VALUES('store', ?, 'transactional application schema', ?)
+      `).run(DATABASE_SCHEMA_VERSION, isoNow());
+      this.db.exec(`PRAGMA user_version = ${DATABASE_SCHEMA_VERSION}; COMMIT`);
+    } catch (error) {
+      try { this.db.exec("ROLLBACK"); } catch {}
+      throw error;
+    }
   }
 
   close() {

@@ -41,7 +41,7 @@ const articles: DocumentationArticle[] = [
     keywords: "login unlock access key change rotate length spaces exact password",
     sections: [
       { title: "Unlock", paragraphs: ["Enter the Access Key on the unlock page. Volt does not trim, normalize, change case, truncate, or otherwise rewrite it. There is no minimum or maximum length, character-class rule, entropy rule, or placeholder denylist; the value only needs to be present."], note: "Leading spaces, trailing spaces, line breaks, and case are significant. Store and enter the exact same value." },
-      { title: "Change the key", paragraphs: ["Open Settings → Security → Change Access Key. Enter the current value, the new value, and the confirmation. Rotation rewraps the portable master key and closes active sessions without re-encrypting every entity payload."], bullets: ["A mismatch leaves the existing key unchanged.", "An empty new value is rejected.", "After success, unlock again with the new exact value."] },
+      { title: "Change the key", paragraphs: ["Open Settings → Security → Change Access Key. Enter the current value, the new value, and the confirmation. Rotation rewraps the portable master key and closes active sessions without re-encrypting every entity payload."], bullets: ["A mismatch leaves the existing key unchanged.", "An empty new value is rejected.", "After success, unlock again with the new exact value.", "On a server installation Volt also synchronizes the protected startup key file. If that file cannot be written, the key change still succeeds and Volt starts locked after a restart instead of rejecting the new key."] },
     ],
   },
   {

@@ -1,11 +1,12 @@
 import assert from "node:assert/strict";
 import { randomBytes } from "node:crypto";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 
 import { createApp } from "../server/app.js";
+import { writeAccessKeyFile } from "../server/access-key-file.js";
 import { parseBackupArchive } from "../server/backup.js";
 import { deriveSessionKey } from "../server/crypto.js";
 import { VoltStore } from "../server/store.js";
@@ -218,10 +219,20 @@ test("operator and machine APIs keep list responses masked", async (context) => 
   });
   const masterKey = portable.masterKey;
   const store = new VoltStore({ filename: portable.filename, masterKey });
+  const accessKeyFilename = path.join(directory, "volt-access.key");
+  writeFileSync(accessKeyFilename, "correct horse battery staple", { mode: 0o660 });
   const app = createApp({
     store,
     sessionKey: deriveSessionKey(masterKey),
     accessKey: "correct horse battery staple",
+    persistAccessKey: (accessKey) => {
+      if (accessKey === "next-key-with-read-only-startup-file") {
+        const error = new Error("read-only startup key fixture");
+        error.code = "EROFS";
+        throw error;
+      }
+      writeAccessKeyFile(accessKeyFilename, accessKey);
+    },
     kernelToken: "kernel-machine-token-at-least-32-characters",
     kernelUrlSeed: "http://127.0.0.1:1",
   });
@@ -422,11 +433,25 @@ test("operator and machine APIs keep list responses masked", async (context) => 
     headers: { cookie, "content-type": "application/json" },
     body: JSON.stringify({ current_access_key: "correct horse battery staple", new_access_key: "k" }),
   });
-  assert.equal(changedKey.status, 204);
+  assert.equal(changedKey.status, 200);
+  assert.deepEqual(await changedKey.json(), { changed: true, startup_key_updated: true });
+  assert.equal(readFileSync(accessKeyFilename, "utf8"), "k");
+  assert.equal(unlockPortableVault({ filename: portable.filename, accessKey: readFileSync(accessKeyFilename, "utf8") }).unlockedWith, "access-key");
   assert.equal((await (await fetch(`${base}/api/v1/session`, { headers: { cookie } })).json()).authenticated, false);
-  assert.equal((await fetch(`${base}/api/v1/session`, {
+  const relogin = await fetch(`${base}/api/v1/session`, {
     method: "POST",
     headers: { "content-type": "application/json" },
     body: JSON.stringify({ access_key: "k" }),
-  })).status, 200);
+  });
+  assert.equal(relogin.status, 200);
+  const rotatedCookie = relogin.headers.getSetCookie()[0].split(";")[0];
+  const changedWithoutFileSync = await fetch(`${base}/api/v1/settings/access-key`, {
+    method: "PUT",
+    headers: { cookie: rotatedCookie, "content-type": "application/json" },
+    body: JSON.stringify({ current_access_key: "k", new_access_key: "next-key-with-read-only-startup-file" }),
+  });
+  assert.equal(changedWithoutFileSync.status, 200);
+  assert.deepEqual(await changedWithoutFileSync.json(), { changed: true, startup_key_updated: false });
+  assert.equal(readFileSync(accessKeyFilename, "utf8"), "k");
+  assert.equal(unlockPortableVault({ filename: portable.filename, accessKey: "next-key-with-read-only-startup-file" }).unlockedWith, "access-key");
 });

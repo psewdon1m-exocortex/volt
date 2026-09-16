@@ -20,7 +20,9 @@ import { DatabaseSync } from "node:sqlite";
 import { verifyAccessKey } from "./security.js";
 
 const FORMAT = "exocortex-personal-volt";
-const FORMAT_VERSION = 1;
+const MIN_FORMAT_VERSION = 1;
+const FORMAT_VERSION = 2;
+export const DATABASE_SCHEMA_VERSION = 2;
 const ACCESS_MEMORY_KIB = 64 * 1024;
 const ACCESS_PASSES = 3;
 const ACCESS_PARALLELISM = 1;
@@ -136,7 +138,7 @@ function buildDeviceWrapper(masterKey, vaultId, deviceKey) {
 function createHeaderSchema(db) {
   db.exec(`
     PRAGMA application_id = 0x564f4c54;
-    PRAGMA user_version = ${FORMAT_VERSION};
+    PRAGMA user_version = ${DATABASE_SCHEMA_VERSION};
     CREATE TABLE IF NOT EXISTS vault_header (
       singleton INTEGER PRIMARY KEY CHECK(singleton = 1),
       format TEXT NOT NULL,
@@ -150,6 +152,13 @@ function createHeaderSchema(db) {
       device_ciphertext TEXT,
       device_nonce TEXT,
       device_tag TEXT
+    ) STRICT;
+    CREATE TABLE IF NOT EXISTS vault_migrations (
+      scope TEXT NOT NULL,
+      version INTEGER NOT NULL,
+      name TEXT NOT NULL,
+      applied_at TEXT NOT NULL,
+      PRIMARY KEY(scope, version)
     ) STRICT;
   `);
 }
@@ -176,6 +185,10 @@ function insertHeader(db, { vaultId, masterKey, accessKey, deviceKey }) {
     device?.nonce ?? null,
     device?.tag ?? null,
   );
+  db.prepare(`
+    INSERT OR IGNORE INTO vault_migrations(scope, version, name, applied_at)
+    VALUES('container', ?, 'portable vault container created', ?)
+  `).run(FORMAT_VERSION, new Date().toISOString());
 }
 
 function readHeader(filename) {
@@ -183,8 +196,16 @@ function readHeader(filename) {
   try {
     db = new DatabaseSync(filename, { readOnly: true });
     const applicationId = Number(db.prepare("PRAGMA application_id").get().application_id);
+    const schemaVersion = Number(db.prepare("PRAGMA user_version").get().user_version);
     const row = db.prepare("SELECT * FROM vault_header WHERE singleton = 1").get();
-    if (applicationId !== 0x564f4c54 || row?.format !== FORMAT || Number(row.format_version) !== FORMAT_VERSION) {
+    const formatVersion = Number(row?.format_version);
+    if (
+      applicationId !== 0x564f4c54
+      || row?.format !== FORMAT
+      || !Number.isInteger(formatVersion)
+      || formatVersion < MIN_FORMAT_VERSION
+      || formatVersion > FORMAT_VERSION
+    ) {
       throw vaultError("VAULT_FORMAT_INVALID", "File is not a supported personal.volt vault");
     }
     if (!/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(row.vault_id)) {
@@ -193,6 +214,8 @@ function readHeader(filename) {
     return {
       vaultId: row.vault_id,
       createdAt: row.created_at,
+      formatVersion,
+      schemaVersion,
       kdf: validateKdf(JSON.parse(row.access_kdf_json)),
       access: { ciphertext: row.access_ciphertext, nonce: row.access_nonce, tag: row.access_tag },
       device: row.device_ciphertext
@@ -231,9 +254,12 @@ export function createPortableVault({ filename, accessKey, deviceKey = null, mas
   const vaultId = randomUUID();
   const db = new DatabaseSync(filename);
   try {
+    db.exec("BEGIN IMMEDIATE");
     createHeaderSchema(db);
     insertHeader(db, { vaultId, masterKey, accessKey, deviceKey });
+    db.exec("COMMIT");
   } catch (error) {
+    try { db.exec("ROLLBACK"); } catch {}
     db.close();
     try { unlinkSync(filename); } catch {}
     throw error;
@@ -243,7 +269,13 @@ export function createPortableVault({ filename, accessKey, deviceKey = null, mas
   return { filename, vaultId, masterKey, created: true, unlockedWith: "created" };
 }
 
-export function unlockPortableVault({ filename, accessKey = null, deviceKey = null, allowDeviceUnlock = false }) {
+export function unlockPortableVault({
+  filename,
+  accessKey = null,
+  legacyAccessKey = null,
+  deviceKey = null,
+  allowDeviceUnlock = false,
+}) {
   if (!existsSync(filename)) throw vaultError("VAULT_NOT_FOUND", "personal.volt does not exist");
   const header = readHeader(filename);
   if (allowDeviceUnlock && deviceKey && header.device) {
@@ -254,21 +286,37 @@ export function unlockPortableVault({ filename, accessKey = null, deviceKey = nu
     } catch {}
   }
   if (accessKey) {
-    try {
-      const masterKey = open(
-        deriveAccessWrapKey(accessKey, header.kdf),
-        header.access,
-        accessAad(header.vaultId, header.kdf),
-      );
-      assertKey(masterKey, "Vault master key");
-      if (deviceKey && !header.device) header.device = installDeviceWrapper(
-        filename,
-        header.vaultId,
-        masterKey,
-        deviceKey,
-      );
-      return { filename, ...header, masterKey, created: false, unlockedWith: "access-key" };
-    } catch {}
+    const candidates = [{ value: accessKey, legacy: false }];
+    if (
+      header.formatVersion === 1
+      && typeof legacyAccessKey === "string"
+      && legacyAccessKey.length > 0
+      && legacyAccessKey !== accessKey
+    ) candidates.push({ value: legacyAccessKey, legacy: true });
+    for (const candidate of candidates) {
+      try {
+        const masterKey = open(
+          deriveAccessWrapKey(candidate.value, header.kdf),
+          header.access,
+          accessAad(header.vaultId, header.kdf),
+        );
+        assertKey(masterKey, "Vault master key");
+        if (deviceKey && !header.device) header.device = installDeviceWrapper(
+          filename,
+          header.vaultId,
+          masterKey,
+          deviceKey,
+        );
+        return {
+          filename,
+          ...header,
+          masterKey,
+          created: false,
+          unlockedWith: candidate.legacy ? "legacy-access-key" : "access-key",
+          usedLegacyAccessKey: candidate.legacy,
+        };
+      } catch {}
+    }
   }
   throw vaultError("VAULT_UNLOCK_FAILED", "personal.volt could not be unlocked with the supplied credentials");
 }
@@ -293,9 +341,12 @@ export function migrateLegacyVault({ legacyFilename, filename, accessKey, legacy
   const db = new DatabaseSync(filename);
   const vaultId = randomUUID();
   try {
+    db.exec("BEGIN IMMEDIATE");
     createHeaderSchema(db);
     insertHeader(db, { vaultId, masterKey: legacyMasterKey, accessKey, deviceKey });
+    db.exec("COMMIT");
   } catch (error) {
+    try { db.exec("ROLLBACK"); } catch {}
     db.close();
     try { unlinkSync(filename); } catch {}
     throw error;
@@ -325,7 +376,9 @@ export function portableVaultInfo(filename) {
   const header = readHeader(filename);
   return {
     format: FORMAT,
-    format_version: FORMAT_VERSION,
+    format_version: header.formatVersion,
+    current_format_version: FORMAT_VERSION,
+    schema_version: header.schemaVersion,
     vault_id: header.vaultId,
     created_at: header.createdAt,
     access_kdf: {

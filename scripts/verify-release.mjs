@@ -17,7 +17,7 @@ if (!/^https:\/\/github\.com\//.test(manifest.compose_bundle?.url || "")
   throw new Error("compose bundle contract is invalid");
 }
 if (!/^\d+\.\d+\.\d+/.test(manifest.minimum_updater_version || "")
-  || manifest.database_schema !== 1
+  || manifest.database_schema !== 2
   || manifest.backup_schema !== "exocortex-volt-logical-backup.v2"
   || !Number.isInteger(manifest.compose_contract) || manifest.compose_contract < 1) {
   throw new Error("release compatibility metadata is invalid");

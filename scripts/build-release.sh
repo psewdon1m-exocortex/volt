@@ -56,7 +56,7 @@ cat > "$root/$output/volt-release.json" <<EOF
     "sha256": "$bundle_sha"
   },
   "minimum_updater_version": "$updater_version",
-  "database_schema": 1,
+  "database_schema": 2,
   "backup_schema": "exocortex-volt-logical-backup.v2",
   "compose_contract": 1,
   "release_notes_url": "https://github.com/${repository}/releases/tag/volt-v${version}"

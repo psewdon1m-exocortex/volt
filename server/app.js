@@ -97,6 +97,7 @@ export function createApp({
   store,
   sessionKey,
   accessKey,
+  persistAccessKey = null,
   kernelToken,
   kernelUrlSeed = "http://127.0.0.1:18180",
   kernelServiceUrl = "",
@@ -547,9 +548,19 @@ export function createApp({
         throw domainError(400, "ACCESS_KEY_REQUIRED", "Access Key must be supplied");
       }
       store.rotateAccessKey(accessKey, hashAccessKey(accessKey));
+      let startupKeyUpdated = null;
+      if (persistAccessKey) {
+        try {
+          persistAccessKey(accessKey);
+          startupKeyUpdated = true;
+        } catch (error) {
+          startupKeyUpdated = false;
+          console.error(`Access Key changed, but the startup key file could not be updated (${error.code ?? "write failed"})`);
+        }
+      }
       response.clearCookie(COOKIE_NAME, { httpOnly: true, sameSite: "strict", secure: secureCookies, path: "/" });
-      store.audit({ actor: "operator", action: "access_key.change" });
-      response.status(204).end();
+      store.audit({ actor: "operator", action: "access_key.change", details: { startup_key_updated: startupKeyUpdated } });
+      response.json({ changed: true, startup_key_updated: startupKeyUpdated });
     } catch (error) { next(error); }
   });
 

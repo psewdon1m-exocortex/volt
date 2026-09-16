@@ -27,7 +27,7 @@ mutation policy. Machine endpoint принимает только общий Bea
 | `GET` | `/api/v1/dashboard` | CPU, RAM, filesystem и uptime процесса |
 | `GET/PUT` | `/api/v1/settings/interface` | Акцент, режим sidebar и сохранённые порядки UI |
 | `GET/PUT` | `/api/v1/settings/trash` | Срок хранения удалённых entries в днях (1–365) |
-| `PUT` | `/api/v1/settings/access-key` | Смена по `{ current_access_key, new_access_key }` с закрытием сессий |
+| `PUT` | `/api/v1/settings/access-key` | Смена по `{ current_access_key, new_access_key }` с закрытием сессий; возвращает статус синхронизации startup key-файла |
 | `GET/PUT` | `/api/v1/settings/kernel-access` | URL, reachability и замена общего Kernel token; значение не возвращается |
 | `GET` | `/api/v1/update/status` | Установленная версия и доступность локального Updater |
 | `POST` | `/api/v1/update/check` | Проверка `repositories.volt.url` через Kernel Register |
