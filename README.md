@@ -16,6 +16,16 @@ SEO/GEO checks to intentionally public/indexable surfaces and concealment,
 crawler and probe-resistance checks to private or authenticated surfaces.
 Every area requires `PASS` evidence or a reasoned `N/A`.
 
+## Required pre-release known-problem gate
+
+Before a service-qualified release is finalized, evaluate every active ID in
+[Part 12](https://github.com/psewdon1m-exocortex/general/blob/main/PART_12_KNOWN_DEPLOYMENT_AND_OPERATIONS_PROBLEMS.md) against the exact candidate. Retain
+`known-problems-report.json` bound to the service revision, qualified tag,
+immutable central-documentation revision and catalog digest. Missing, stale,
+failed, unknown or unsupported `N/A` evidence blocks publication. This is a
+normative release requirement; until the repository workflow generates and
+enforces that report, the release pipeline remains an implementation gap.
+
 Volt — локальное зашифрованное хранилище Exocortex и единственный источник значений
 для ссылок `volt://<entry-id>/<value-position>` в Kernel Register.
 
@@ -79,7 +89,7 @@ verifier; исходное значение не входит ни в `personal.
 
 ```powershell
 npm install
-$env:VOLT_ACCESS_KEY = '<не менее 12 символов>'
+$env:VOLT_ACCESS_KEY = '<выбранное оператором значение>'
 npm run build
 npm start
 ```
@@ -90,6 +100,19 @@ Access Key в защищённом файле через `VOLT_ACCESS_KEY_FILE`;
 ключа. Без ключа сервер поднимет экран разблокировки, а readiness останется
 недоступным до ввода действующего Access Key. Один `VOLT_DEVICE_KEY_FILE`
 разблокировку не выполняет.
+
+`VOLT_ACCESS_KEY` должен быть явно передан, но в остальном является непрозрачным
+точным значением. Для него нет минимальной/максимальной длины, обязательных или
+запрещённых классов символов, URL-safe/ASCII-ограничения, strength/entropy или
+denylist известных/example/placeholder значений. Запуск, web unlock, смена
+ключа, backup/restore и offline unlock не должны применять trim, нормализацию,
+изменение регистра или усечение.
+
+> Расхождение реализации (2026-09-14): installer, startup, web unlock и
+> vault-file сейчас требуют 12–512 символов, отклоняют placeholder-значения, а
+> file-secret path обрезает внешние пробелы. Эти `BST-13` ограничения не являются
+> требованиями и блокируют следующий production release до исправления кода и
+> тестов.
 
 Интерфейс: `http://127.0.0.1:18184`. В production используйте только общий
 серверный Nginx для HTTPS-маршрутизации, `VOLT_SECURE_COOKIES=true` и внешний read-only secret mount для
