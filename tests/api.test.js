@@ -103,7 +103,10 @@ test("Volt release discovery, updater install, job control and rollback restore 
   assert.equal(installed.status, 202);
   assert.equal(submitted.version, "0.2.0");
   assert.match(submitted.filename, /^volt-pre-update-\d{14}\.zip$/);
-  assert.equal(parseBackupArchive(submitted.backup).manifest.source_version, "0.1.0");
+  const preUpdateBackup = parseBackupArchive(submitted.backup);
+  assert.equal(preUpdateBackup.manifest.source_version, "0.1.0");
+  assert.equal(preUpdateBackup.manifest.scope, "complete");
+  assert.ok(preUpdateBackup.portableSnapshot);
 
   assert.equal((await fetch(`${base}/api/v1/update/jobs/${completedJob.id}`, { headers: { cookie } })).status, 200);
   assert.equal((await fetch(`${base}/api/v1/update/jobs/${completedJob.id}/rollback`, { method: "POST", headers: { cookie, "content-type": "application/json" }, body: "{}" })).status, 202);
@@ -264,22 +267,30 @@ test("operator and machine APIs keep list responses masked", async (context) => 
   const interfaceUpdate = await fetch(`${base}/api/v1/settings/interface`, {
     method: "PUT",
     headers: { cookie, "content-type": "application/json" },
-    body: JSON.stringify({ accent: "#62FF8C", sidebar_mode: "auto", navigation_order: ["vault", "dashboard", "trash", "audit", "settings"] }),
+    body: JSON.stringify({ accent: "#62FF8C", sidebar_mode: "auto", activity_ranking_enabled: true, navigation_order: ["vault", "dashboard", "trash", "audit", "settings"] }),
   });
   const interfaceSettings = await interfaceUpdate.json();
   assert.equal(interfaceUpdate.status, 200);
   assert.equal(interfaceSettings.accent, "#62FF8C");
   assert.equal(interfaceSettings.sidebar_mode, "auto");
+  assert.equal(interfaceSettings.activity_ranking_enabled, true);
   assert.deepEqual(interfaceSettings.navigation_order, ["vault", "dashboard", "trash", "audit", "settings"]);
   const secret = "api-secret-value";
   const created = await fetch(`${base}/api/v1/entries`, {
     method: "POST",
     headers: { cookie, "content-type": "application/json" },
-    body: JSON.stringify({ title: "API entry", fields: [{ key: "password", value: secret, visibility: "secret" }] }),
+    body: JSON.stringify({ title: "API entry", projects: ["platform", "operations"], fields: [{ key: "password", value: secret, visibility: "secret" }] }),
   });
   assert.equal(created.status, 201);
   const entry = await created.json();
   assert.equal(entry.fields[0].value, null);
+  assert.deepEqual(entry.projects, ["platform", "operations"]);
+  const interaction = await fetch(`${base}/api/v1/entries/${entry.id}/interactions`, {
+    method: "POST",
+    headers: { cookie, "content-type": "application/json" },
+    body: JSON.stringify({ action: "copy.value" }),
+  });
+  assert.equal(interaction.status, 200);
   const dashboardWithEntry = await fetch(`${base}/api/v1/dashboard`, { headers: { cookie } });
   assert.equal((await dashboardWithEntry.json()).entries, 1);
 
@@ -409,13 +420,13 @@ test("operator and machine APIs keep list responses masked", async (context) => 
   const changedKey = await fetch(`${base}/api/v1/settings/access-key`, {
     method: "PUT",
     headers: { cookie, "content-type": "application/json" },
-    body: JSON.stringify({ current_access_key: "correct horse battery staple", new_access_key: "new correct horse battery staple" }),
+    body: JSON.stringify({ current_access_key: "correct horse battery staple", new_access_key: "k" }),
   });
   assert.equal(changedKey.status, 204);
   assert.equal((await (await fetch(`${base}/api/v1/session`, { headers: { cookie } })).json()).authenticated, false);
   assert.equal((await fetch(`${base}/api/v1/session`, {
     method: "POST",
     headers: { "content-type": "application/json" },
-    body: JSON.stringify({ access_key: "new correct horse battery staple" }),
+    body: JSON.stringify({ access_key: "k" }),
   })).status, 200);
 });

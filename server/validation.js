@@ -11,9 +11,18 @@ function requiredText(value, name, max) {
   return normalized;
 }
 
-function optionalText(value, name, max) {
-  if (value == null || value === "") return null;
-  return requiredText(value, name, max);
+function normalizeProjects(body) {
+  const source = body.projects === undefined
+    ? (body.project == null || body.project === "" ? [] : [body.project])
+    : body.projects;
+  if (!Array.isArray(source) || source.length > 20) {
+    throw domainError(400, "INVALID_ENTRY", "Projects must be an array with at most 20 names");
+  }
+  const projects = source.map((value, index) => requiredText(value, `Project ${index + 1}`, 80));
+  if (new Set(projects.map((value) => value.toLocaleLowerCase("en-US"))).size !== projects.length) {
+    throw domainError(400, "INVALID_ENTRY", "Project names must be unique within an entry");
+  }
+  return projects;
 }
 
 function cleanGenerator(generator) {
@@ -30,8 +39,8 @@ export function normalizeEntryPayload(body) {
   if (!body || typeof body !== "object" || Array.isArray(body)) {
     throw domainError(400, "INVALID_ENTRY", "Entry payload must be an object");
   }
-  if (!Array.isArray(body.fields) || body.fields.length < 1 || body.fields.length > 5) {
-    throw domainError(400, "INVALID_ENTRY", "Entry must contain between 1 and 5 fields");
+  if (!Array.isArray(body.fields) || body.fields.length < 1 || body.fields.length > 20) {
+    throw domainError(400, "INVALID_ENTRY", "Entry must contain between 1 and 20 fields");
   }
   const ids = new Set();
   const fields = body.fields.map((field, index) => {
@@ -57,7 +66,7 @@ export function normalizeEntryPayload(body) {
   return {
     schema: 1,
     title: requiredText(body.title, "Title", 120),
-    project: optionalText(body.project, "Project", 80),
+    projects: normalizeProjects(body),
     fields,
   };
 }

@@ -4,6 +4,7 @@ import { api } from "./api";
 import { ConfirmDialog } from "./ConfirmDialog";
 import { Icon } from "./icons";
 import type { TrashEntry } from "./types";
+import { SearchField } from "./Ui";
 import { errorMessage, type Toast } from "./ui-helpers";
 
 const DAY_MS = 24 * 60 * 60 * 1000;
@@ -43,7 +44,7 @@ export function TrashPage({ toast }: { toast: Toast }) {
   const visible = useMemo(() => {
     const needle = query.trim().toLocaleLowerCase("en-US");
     if (!needle) return entries;
-    return entries.filter((entry) => [entry.title, entry.project, entry.id]
+    return entries.filter((entry) => [entry.title, ...entry.projects, entry.id]
       .some((value) => value?.toLocaleLowerCase("en-US").includes(needle)));
   }, [entries, query]);
 
@@ -72,7 +73,7 @@ export function TrashPage({ toast }: { toast: Toast }) {
 
   return <div className="page trash-page">
     <div className="collection-command-bar trash-command-bar" role="search" aria-label="Search deleted entries">
-      <label className="search"><Icon name="search" /><input aria-label="Search trash" value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Title, project, or entity ID" /></label>
+      <SearchField label="Search trash" value={query} onChange={setQuery} placeholder="Title, project, or entity ID" />
       <div className="collection-information"><strong>{visible.length} / {entries.length}</strong><span>deleted</span><small>Permanently erased after {retentionDays} days</small></div>
     </div>
     {loading ? <div className="empty-state"><div className="loader" /><p>Opening trash…</p></div> : visible.length ? <div className="trash-grid">
@@ -85,7 +86,7 @@ export function TrashPage({ toast }: { toast: Toast }) {
           </div>
         </header>
         <div className="trash-card-body">
-          <div className="entry-meta">{entry.project && <span className="project-tag">{entry.project}</span>}<span>v{entry.revision}</span><span>{entry.fields.length} {entry.fields.length === 1 ? "value" : "values"}</span></div>
+          <div className="entry-meta">{entry.projects.map((project) => <span className="project-tag" key={project}>{project}</span>)}<span>v{entry.revision}</span><span>{entry.fields.length} {entry.fields.length === 1 ? "value" : "values"}</span></div>
           <dl className="trash-retention">
             <div><dt>Deleted</dt><dd><time dateTime={entry.deleted_at}>{dateTime(entry.deleted_at)}</time></dd></div>
             <div><dt>Permanent deletion</dt><dd><time dateTime={entry.purge_at}>{dateTime(entry.purge_at)}</time><strong>{remainingLabel(entry.purge_at, now)}</strong></dd></div>

@@ -18,6 +18,7 @@ type Notice = { id: string; message: string; tone: "ok" | "error" };
 const DEFAULT_INTERFACE: InterfaceSettings = {
   accent: "#00A8FF",
   sidebar_mode: "fixed",
+  activity_ranking_enabled: false,
   navigation_order: ["dashboard", "vault", "trash", "audit", "settings"],
   settings_order: ["appearance", "security", "backup", "updates", "logs", "cryptography"],
   dashboard_order: ["cpu", "memory", "disk", "uptime", "entities"],
@@ -137,7 +138,7 @@ export function App() {
 
   const content = useMemo<Record<Page, React.ReactNode>>(() => ({
     dashboard: <DashboardPage settings={settings} onSettings={setSettings} toast={toast} />,
-    vault: <VaultPage toast={toast} />,
+    vault: <VaultPage rankingEnabled={settings.activity_ranking_enabled} toast={toast} />,
     trash: <TrashPage toast={toast} />,
     audit: <AuditPage toast={toast} />,
     settings: <SettingsPage settings={settings} onSettings={setSettings} onLocked={() => setAuthenticated(false)} toast={toast} />,

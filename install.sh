@@ -126,10 +126,9 @@ prepare_volt_secrets() {
   if [ ! -s "$access_file" ]; then
     access_key=$(get_env VOLT_ACCESS_KEY)
     case "$access_key" in
-      ""|CHANGE_ME*|change-*|replace-*) ;;
+      "") ;;
       *)
-        [ "${#access_key}" -ge 12 ] && [ "${#access_key}" -le 512 ] || fail "VOLT_ACCESS_KEY must contain between 12 and 512 characters"
-        printf '%s\n' "$access_key" >"$access_file"
+        printf '%s' "$access_key" >"$access_file"
         set_env VOLT_ACCESS_KEY ""
         ;;
     esac

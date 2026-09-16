@@ -18,7 +18,7 @@ export function createLockedRuntime({ unlock, distDir, initialApp = null, trustP
   gateway.get("/health/live", (_request, response) => response.json({ status: "ok", locked: true }));
   gateway.get("/api/v1/health", (_request, response) => response.status(503).json({ status: "locked", service: "volt", schema: "volt.health.v1" }));
   gateway.get("/api/v1/session", (_request, response) => response.json({ authenticated: false, locked: true, appearance: "dark" }));
-  gateway.post("/api/v1/session", express.json({ limit: "4kb" }), (request, response, next) => {
+  gateway.post("/api/v1/session", express.json({ limit: "2mb" }), (request, response, next) => {
     const fail = (status, code) => response.status(status).json({ error: { code, message: code === "INVALID_ACCESS_KEY" ? "Access Key is incorrect" : "Wait before trying again" } });
     const origin = request.get("origin");
     try {
@@ -32,7 +32,7 @@ export function createLockedRuntime({ unlock, distDir, initialApp = null, trustP
     if (state.count >= 5 || globalAttempts >= 30) return fail(429, "TOO_MANY_ATTEMPTS");
     state.count++; globalAttempts++; attempts.set(ip, state);
     const key = request.body?.access_key;
-    if (typeof key !== "string" || key.length < 12 || key.length > 512) return fail(401, "INVALID_ACCESS_KEY");
+    if (typeof key !== "string" || key.length === 0) return fail(401, "INVALID_ACCESS_KEY");
     try { active = unlock(key); }
     catch { return fail(401, "INVALID_ACCESS_KEY"); }
     attempts.clear();

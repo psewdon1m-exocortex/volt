@@ -23,7 +23,7 @@ const legacyMasterKeyFile = process.env.VOLT_LEGACY_MASTER_KEY_FILE || process.e
 const deviceKey = deviceKeyFile ? readMasterKey(path.resolve(deviceKeyFile)) : null;
 const legacyMasterKey = legacyMasterKeyFile ? readMasterKey(path.resolve(legacyMasterKeyFile)) : null;
 const bootstrapAccessKey = process.env.VOLT_ACCESS_KEY_FILE
-  ? fs.readFileSync(path.resolve(process.env.VOLT_ACCESS_KEY_FILE), "utf8").trim()
+  ? fs.readFileSync(path.resolve(process.env.VOLT_ACCESS_KEY_FILE), "utf8")
   : process.env.VOLT_ACCESS_KEY;
 const updaterControlToken = process.env.UPDATER_CONTROL_TOKEN_FILE
   ? fs.readFileSync(path.resolve(process.env.UPDATER_CONTROL_TOKEN_FILE), "utf8").trim()

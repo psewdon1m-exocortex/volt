@@ -7,13 +7,14 @@ export interface VoltField {
   visibility: Visibility;
   generator: Record<string, unknown> | null;
   masked?: boolean;
+  length?: number;
 }
 
 export interface Entry {
   id: string;
   schema: number;
   title: string;
-  project: string | null;
+  projects: string[];
   fields: VoltField[];
   revision: number;
   created_at: string;

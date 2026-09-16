@@ -82,6 +82,7 @@ export type UpdateJob = {
 export type InterfaceSettings = {
   accent: string;
   sidebar_mode: "fixed" | "auto";
+  activity_ranking_enabled: boolean;
   navigation_order: string[];
   settings_order: string[];
   dashboard_order: string[];
@@ -140,6 +141,7 @@ export const api = {
   restoreEntry: (id: string) => request<Entry>(`/api/v1/trash/${id}/restore`, { method: "POST", body: "{}" }),
   purgeEntry: (id: string) => request<void>(`/api/v1/trash/${id}`, { method: "DELETE" }),
   reorderEntries: (ids: string[]) => request<void>("/api/v1/entries/reorder", { method: "POST", body: JSON.stringify({ ids }) }),
+  recordEntryInteraction: (id: string, action: "open" | "copy.value" | "copy.reference" | "reveal") => request<{ recorded: boolean }>(`/api/v1/entries/${id}/interactions`, { method: "POST", body: JSON.stringify({ action }) }),
   reveal: (entryId: string, fieldId: string, revision?: number) => request<{ value: string; revision: number }>(
     `/api/v1/entries/${entryId}/fields/${fieldId}/reveal`,
     { method: "POST", body: JSON.stringify({ revision }) },

@@ -1,13 +1,18 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useId, useMemo, useState } from "react";
 
 import { ApiError, api } from "./api";
 import { ConfirmDialog } from "./ConfirmDialog";
 import { Icon } from "./icons";
 import type { Entry, GeneratedValue, Revision, VoltField } from "./types";
-import { DragDots, Modal } from "./Ui";
+import { DragDots, Modal, SearchField } from "./Ui";
 import { dropItem, moveItem } from "./ui-helpers";
 
 type Toast = (message: string, tone?: "ok" | "error") => void;
+const MAX_ENTRY_VALUES = 20;
+
+function maskValue(value: string) {
+  return [...value].map((character) => character === "\n" || character === "\r" ? character : "*").join("");
+}
 
 function dateTime(value: string) {
   return new Intl.DateTimeFormat("en-US", { dateStyle: "medium", timeStyle: "short" }).format(new Date(value));
@@ -17,7 +22,7 @@ function errorMessage(error: unknown) {
   return error instanceof Error ? error.message : "Could not complete the action";
 }
 
-function FieldValue({ entryId, field, position, revision, toast }: { entryId: string; field: VoltField; position: number; revision?: number; toast: Toast }) {
+function FieldValue({ entryId, field, position, revision, toast, onInteracted }: { entryId: string; field: VoltField; position: number; revision?: number; toast: Toast; onInteracted?: () => void }) {
   const [revealed, setRevealed] = useState<string | null>(null);
   const [manualReference, setManualReference] = useState<string | null>(null);
   const secret = field.visibility === "secret";
@@ -32,12 +37,14 @@ function FieldValue({ entryId, field, position, revision, toast }: { entryId: st
     return () => document.removeEventListener("visibilitychange", hide);
   }, []);
 
-  async function getValue() {
+  async function getValue(show = true) {
     if (!secret) return field.value ?? "";
     if (revealed != null) return revealed;
     const result = await api.reveal(entryId, field.id, revision);
-    setRevealed(result.value);
-    window.setTimeout(() => setRevealed(null), 30_000);
+    if (show) {
+      setRevealed(result.value);
+      window.setTimeout(() => setRevealed(null), 30_000);
+    }
     return result.value;
   }
 
@@ -45,30 +52,27 @@ function FieldValue({ entryId, field, position, revision, toast }: { entryId: st
     event.stopPropagation();
     try {
       if (revealed != null) setRevealed(null);
-      else await getValue();
+      else {
+        await getValue();
+        if (revision == null) void api.recordEntryInteraction(entryId, "reveal").then(() => onInteracted?.()).catch(() => undefined);
+      }
     } catch (error) { toast(errorMessage(error), "error"); }
   }
 
   async function copy(event: React.MouseEvent) {
     event.stopPropagation();
+    if (!window.isSecureContext || !document.hasFocus() || !navigator.clipboard?.writeText) {
+      toast("Clipboard unavailable — use Reveal to select the value manually", "error");
+      return;
+    }
     try {
-      const value = await getValue();
-      if (secret && revealed == null) {
-        setRevealed(value);
-        toast("Value revealed. Press Copy again to replace the clipboard contents.");
-        return;
-      }
-      if (!window.isSecureContext || !document.hasFocus() || !navigator.clipboard?.writeText) {
-        setRevealed(value);
-        toast("Clipboard unavailable — select the displayed value manually", "error");
-        return;
-      }
+      const value = await getValue(false);
       try {
         await navigator.clipboard.writeText(value);
         toast("Value copied");
+        if (revision == null) void api.recordEntryInteraction(entryId, "copy.value").then(() => onInteracted?.()).catch(() => undefined);
       } catch {
-        setRevealed(value);
-        toast("Clipboard unavailable — the value is shown for manual copying", "error");
+        toast("Clipboard unavailable — use Reveal to select the value manually", "error");
       }
     } catch (error) { toast(errorMessage(error), "error"); }
   }
@@ -80,7 +84,7 @@ function FieldValue({ entryId, field, position, revision, toast }: { entryId: st
       if (!window.isSecureContext || !document.hasFocus() || !navigator.clipboard?.writeText) {
         setManualReference(reference); toast("Clipboard unavailable — the reference is shown for manual copying", "error"); return;
       }
-      try { await navigator.clipboard.writeText(reference); setManualReference(null); toast("Value reference copied"); }
+      try { await navigator.clipboard.writeText(reference); setManualReference(null); toast("Value reference copied"); void api.recordEntryInteraction(entryId, "copy.reference").then(() => onInteracted?.()).catch(() => undefined); }
       catch { setManualReference(reference); toast("Clipboard unavailable — the reference is shown for manual copying", "error"); }
     } catch (error) { toast(errorMessage(error), "error"); }
   }
@@ -88,8 +92,9 @@ function FieldValue({ entryId, field, position, revision, toast }: { entryId: st
   return (
     <div className="field-row">
       <div className="field-copy">
+        <span className="field-key">{field.key}</span>
         <span className={`field-value${secret ? " mono" : ""}`} title={secret ? undefined : field.value ?? ""}>
-          {secret && revealed == null ? "••••••••••••" : (revealed ?? field.value ?? "—")}
+          {secret && revealed == null ? "*".repeat(field.length ?? 12) : (revealed ?? field.value ?? "—")}
         </span>
       </div>
       <div className="field-actions">
@@ -162,9 +167,9 @@ function RevisionPanel({ entry, toast, onRestored }: { entry: Entry; toast: Toas
 
 interface EditorValue extends VoltField { value: string }
 
-function createEditorValue(value = "", visibility: VoltField["visibility"] = "secret"): EditorValue {
+function createEditorValue(value = "", visibility: VoltField["visibility"] = "secret", key = "value"): EditorValue {
   const id = crypto.randomUUID();
-  return { id, key: `value_${id.slice(0, 8)}`, value, visibility, generator: null };
+  return { id, key, value, visibility, generator: null };
 }
 
 function GeneratorDialog({ availableSlots, onApply, onClose, toast }: {
@@ -229,15 +234,17 @@ function GeneratorDialog({ availableSlots, onApply, onClose, toast }: {
   );
 }
 
-function EntryEditor({ entry, initialFields, onClose, onSaved, toast }: {
+function EntryEditor({ entry, initialFields, projectOptions, onClose, onSaved, toast }: {
   entry: Entry | null;
   initialFields?: EditorValue[];
+  projectOptions: string[];
   onClose: () => void;
   onSaved: () => void;
   toast: Toast;
 }) {
   const [title, setTitle] = useState(entry?.title ?? "");
-  const [project, setProject] = useState(entry?.project ?? "");
+  const [projects, setProjects] = useState<string[]>(entry?.projects ?? []);
+  const [projectDraft, setProjectDraft] = useState("");
   const [reason, setReason] = useState("");
   const [fields, setFields] = useState<EditorValue[]>(() => initialFields ?? [createEditorValue()]);
   const [generatorIndex, setGeneratorIndex] = useState<number | null>(null);
@@ -245,6 +252,34 @@ function EntryEditor({ entry, initialFields, onClose, onSaved, toast }: {
   const [dragReadyValue, setDragReadyValue] = useState<string | null>(null);
   const [draggingValue, setDraggingValue] = useState<string | null>(null);
   const [valueDropTarget, setValueDropTarget] = useState<{ id: string; before: boolean } | null>(null);
+  const projectInputId = useId();
+  const projectSuggestion = useMemo(() => {
+    const needle = projectDraft.trim().toLocaleLowerCase("en-US");
+    if (!needle) return null;
+    return projectOptions.find((option) => (
+      !projects.some((project) => project.toLocaleLowerCase("en-US") === option.toLocaleLowerCase("en-US"))
+      && option.toLocaleLowerCase("en-US").startsWith(needle)
+      && option.toLocaleLowerCase("en-US") !== needle
+    )) ?? null;
+  }, [projectDraft, projectOptions, projects]);
+
+  function nextProjects(includeDraft = false) {
+    const draft = projectDraft.trim();
+    if (!includeDraft || !draft) return projects;
+    return projects.some((project) => project.toLocaleLowerCase("en-US") === draft.toLocaleLowerCase("en-US")) ? projects : [...projects, draft];
+  }
+
+  function addProject(value = projectDraft) {
+    const draft = value.trim();
+    if (!draft) return;
+    if (projects.length >= 20) return toast("An entry can belong to at most 20 projects", "error");
+    if (projects.some((project) => project.toLocaleLowerCase("en-US") === draft.toLocaleLowerCase("en-US"))) {
+      setProjectDraft("");
+      return;
+    }
+    setProjects([...projects, draft]);
+    setProjectDraft("");
+  }
 
   function updateField(index: number, update: Partial<EditorValue>) {
     setFields((current) => current.map((field, fieldIndex) => fieldIndex === index ? { ...field, ...update } : field));
@@ -265,15 +300,15 @@ function EntryEditor({ entry, initialFields, onClose, onSaved, toast }: {
   function applyGenerated(result: GeneratedValue) {
     if (generatorIndex == null) return;
     const values: EditorValue[] = result.values.map((value) => ({
-      ...createEditorValue(value.value, value.visibility), generator: { type: result.kind, ...result.parameters },
+      ...createEditorValue(value.value, value.visibility, value.key), generator: { type: result.kind, ...result.parameters },
     } satisfies EditorValue));
-    if (fields.length - 1 + values.length > 5) {
+    if (fields.length - 1 + values.length > MAX_ENTRY_VALUES) {
       toast("Free one more value slot for the key pair", "error");
       return;
     }
     const current = fields[generatorIndex];
     values[0].id = current.id;
-    values[0].key = current.key;
+    if (current.key !== "value") values[0].key = current.key;
     if (values.length === 1) values[0].visibility = current.visibility;
     setFields([...fields.slice(0, generatorIndex), ...values, ...fields.slice(generatorIndex + 1)]);
     setGeneratorIndex(null);
@@ -281,8 +316,12 @@ function EntryEditor({ entry, initialFields, onClose, onSaved, toast }: {
 
   async function save(event: React.FormEvent) {
     event.preventDefault();
+    if (projects.length >= 20 && projectDraft.trim() && !projects.some((project) => project.toLocaleLowerCase("en-US") === projectDraft.trim().toLocaleLowerCase("en-US"))) {
+      toast("An entry can belong to at most 20 projects", "error");
+      return;
+    }
     setBusy(true);
-    const payload = { title, project: project || null, fields, reason: reason || undefined, expected_revision: entry?.revision };
+    const payload = { title, projects: nextProjects(true), fields, reason: reason || undefined, expected_revision: entry?.revision };
     try {
       if (entry) await api.updateEntry(entry.id, payload);
       else await api.createEntry(payload);
@@ -294,11 +333,11 @@ function EntryEditor({ entry, initialFields, onClose, onSaved, toast }: {
   }
 
   return <>
-    <Modal title={entry ? "Edit entry" : "Add to Volt"} eyebrow={entry ? `ENTITY ${entry.id}` : "NEW ENTRY"} className="editor-card" dirty={busy || Boolean(title || project || fields.some((field) => field.value))} onClose={onClose} footer={<><button className="button ghost" type="button" onClick={onClose}>Cancel</button><button className="button" form="entry-editor-form" disabled={busy}>{busy ? "Saving…" : "Save"}</button></>}>
+    <Modal title={entry ? "Edit entry" : "Add to Volt"} eyebrow={entry ? `ENTITY ${entry.id}` : "NEW ENTRY"} className="editor-card" dirty={busy || Boolean(title || projects.length || projectDraft || fields.some((field) => field.value))} onClose={onClose} footer={<><button className="button ghost" type="button" onClick={onClose}>Cancel</button><button className="button" form="entry-editor-form" disabled={busy}>{busy ? "Saving…" : "Save"}</button></>}>
       <form id="entry-editor-form" onSubmit={save}>
         <div className="editor-body">
-          <div className="form-grid two editor-identity"><label className="control-label">Title<input required maxLength={120} autoFocus value={title} onChange={(event) => setTitle(event.target.value)} /></label><label className="control-label">Project<input maxLength={80} value={project} onChange={(event) => setProject(event.target.value)} /></label></div>
-          <div className="values-header"><div><span className="eyebrow">VALUES</span><strong>{fields.length} / 5</strong></div>{fields.length < 5 && <button className="button secondary small" type="button" onClick={() => setFields([...fields, createEditorValue()])}><Icon name="plus" />Add</button>}</div>
+          <div className="form-grid two editor-identity"><label className="control-label">Title<input required maxLength={120} autoFocus value={title} onChange={(event) => setTitle(event.target.value)} /></label><div className="control-label project-control"><label htmlFor={projectInputId}>Projects</label><div className="project-input-row"><div className="project-autocomplete"><span className="project-autocomplete-ghost" aria-hidden="true">{projectSuggestion ?? ""}</span><input id={projectInputId} autoComplete="off" aria-autocomplete="inline" aria-describedby={`${projectInputId}-hint`} maxLength={80} value={projectDraft} onChange={(event) => setProjectDraft(event.target.value)} onKeyDown={(event) => { if ((event.key === "Tab" || event.key === "ArrowRight") && projectSuggestion && (event.key === "Tab" || event.currentTarget.selectionStart === projectDraft.length)) { event.preventDefault(); setProjectDraft(projectSuggestion); return; } if (event.key !== "Enter" && event.key !== ",") return; event.preventDefault(); addProject(projectSuggestion ?? projectDraft); }} /></div><button className="button secondary" type="button" disabled={!projectDraft.trim() || projects.length >= 20} onClick={() => addProject()} aria-label="Add project"><Icon name="plus" />Add</button></div><span id={`${projectInputId}-hint`} className="project-autocomplete-hint">{projectSuggestion ? `Tab or right arrow completes “${projectSuggestion}”` : "Type a new or known project name"}</span>{projects.length > 0 && <span className="project-selection" aria-label="Selected projects">{projects.map((project) => <button key={project} type="button" className="project-tag selected" title={`Remove ${project}`} onClick={() => setProjects(projects.filter((value) => value !== project))}>{project}<span aria-hidden="true">×</span></button>)}</span>}</div></div>
+          <div className="values-header"><div><span className="eyebrow">VALUES</span><strong>{fields.length} / {MAX_ENTRY_VALUES}</strong></div>{fields.length < MAX_ENTRY_VALUES && <button className="button secondary small" type="button" onClick={() => setFields([...fields, createEditorValue()])}><Icon name="plus" />Add</button>}</div>
           <p className="hint">Kernel references use these 1-based positions. Reordering or deleting values changes what an existing reference resolves.</p>
           <div className="editor-values">
             {fields.map((field, index) => {
@@ -306,7 +345,11 @@ function EntryEditor({ entry, initialFields, onClose, onSaved, toast }: {
               return <div className={`editor-value${draggingValue === field.id ? " dragging" : ""}${dropClass}`} key={field.id} draggable={dragReadyValue === field.id} onDragStart={(event) => { event.dataTransfer.effectAllowed = "move"; setDraggingValue(field.id); }} onDragEnd={() => { setDragReadyValue(null); setDraggingValue(null); setValueDropTarget(null); }} onDragOver={(event) => { event.preventDefault(); const rect = event.currentTarget.getBoundingClientRect(); setValueDropTarget({ id: field.id, before: event.clientY < rect.top + rect.height / 2 }); }} onDrop={(event) => { event.preventDefault(); dropField(field.id, valueDropTarget?.id === field.id ? valueDropTarget.before : true); }}>
               <DragDots label={`Move value ${index + 1}`} onPointerDown={() => setDragReadyValue(field.id)} onPointerUp={() => setDragReadyValue(null)} onKeyDown={(event) => { if (!event.altKey || !["ArrowUp", "ArrowDown"].includes(event.key)) return; event.preventDefault(); moveField(index, event.key === "ArrowUp" ? -1 : 1); }} />
               <span className="value-number">{String(index + 1).padStart(2, "0")}</span>
-              <textarea className={field.visibility === "secret" ? "secret-entry-value" : ""} aria-label={`${field.visibility === "secret" ? "Secret " : ""}Value ${index + 1}`} required rows={field.value.includes("\n") ? 5 : 1} value={field.value} onChange={(event) => updateField(index, { value: event.target.value })} onCopy={(event) => { if (field.visibility !== "secret") return; const start = event.currentTarget.selectionStart; const end = event.currentTarget.selectionEnd; if (start === end) return; event.preventDefault(); event.clipboardData.setData("text/plain", field.value.slice(start, end)); }} placeholder="Value" />
+              <input className="value-key-input" aria-label={`Key ${index + 1}`} required maxLength={64} value={field.key} onChange={(event) => updateField(index, { key: event.target.value })} placeholder="Key" />
+              <div className={`editor-value-input${field.visibility === "secret" ? " secret" : ""}`}>
+                <textarea aria-label={`${field.visibility === "secret" ? "Secret " : ""}Value ${index + 1}`} required rows={field.value.includes("\n") ? 5 : 1} value={field.value} onChange={(event) => updateField(index, { value: event.target.value })} onCopy={(event) => { if (field.visibility !== "secret") return; const start = event.currentTarget.selectionStart; const end = event.currentTarget.selectionEnd; if (start === end) return; event.preventDefault(); event.clipboardData.setData("text/plain", field.value.slice(start, end)); }} placeholder="Value" />
+                {field.visibility === "secret" && <span className={field.value.includes("\n") ? "multiline" : ""} aria-hidden="true">{maskValue(field.value)}</span>}
+              </div>
               <div className="value-tools"><div className="segmented"><button type="button" className={field.visibility === "secret" ? "active" : ""} onClick={() => updateField(index, { visibility: "secret" })}>Secret</button><button type="button" className={field.visibility === "plain" ? "active" : ""} onClick={() => updateField(index, { visibility: "plain" })}>Plain</button></div><button className="icon-button accent" type="button" title="Generate" onClick={() => setGeneratorIndex(index)}><Icon name="spark" /></button>{fields.length > 1 && <button className="icon-button danger" type="button" title="Delete value" onClick={() => setFields(fields.filter((_, i) => i !== index))}><Icon name="trash" /></button>}</div>
             </div>; })}
           </div>
@@ -315,14 +358,16 @@ function EntryEditor({ entry, initialFields, onClose, onSaved, toast }: {
       </form>
       {entry && <RevisionPanel entry={entry} toast={toast} onRestored={onSaved} />}
     </Modal>
-    {generatorIndex != null && <GeneratorDialog availableSlots={6 - fields.length} toast={toast} onClose={() => setGeneratorIndex(null)} onApply={applyGenerated} />}
+    {generatorIndex != null && <GeneratorDialog availableSlots={MAX_ENTRY_VALUES + 1 - fields.length} toast={toast} onClose={() => setGeneratorIndex(null)} onApply={applyGenerated} />}
   </>;
 }
 
-function EntryCard({ entry, index, onChanged, toast, move, dragging, dropTarget, onDragStart, onDragEnd, onDragPosition, onDrop }: {
+function EntryCard({ entry, index, projectOptions, onChanged, onInteracted, toast, move, dragging, dropTarget, onDragStart, onDragEnd, onDragPosition, onDrop }: {
   entry: Entry;
   index: number;
+  projectOptions: string[];
   onChanged: () => void;
+  onInteracted: () => void;
   toast: Toast;
   move: (direction: -1 | 1) => void;
   dragging: string | null;
@@ -346,6 +391,7 @@ function EntryCard({ entry, index, onChanged, toast, move, dragging, dropTarget,
         value: field.visibility === "secret" ? (await api.reveal(entry.id, field.id)).value : field.value ?? "",
       })));
       setEditorFields(resolved);
+      void api.recordEntryInteraction(entry.id, "open").catch(() => undefined);
     } catch (error) { toast(errorMessage(error), "error"); }
     finally { setLoadingEdit(false); }
   }
@@ -360,16 +406,16 @@ function EntryCard({ entry, index, onChanged, toast, move, dragging, dropTarget,
     <article className={`entry-card universal-card${dragging === entry.id ? " dragging" : ""}${dropClass}`} draggable={dragReady} onDoubleClick={(event) => { if (!(event.target instanceof Element && event.target.closest("button, input, textarea, select, a"))) void openEditor(); }} onDragStart={(event) => { event.dataTransfer.effectAllowed = "move"; onDragStart(); }} onDragEnd={() => { setDragReady(false); onDragEnd(); }} onDragOver={(event) => { event.preventDefault(); const rect = event.currentTarget.getBoundingClientRect(); onDragPosition(event.clientY < rect.top + rect.height / 2); }} onDrop={(event) => { event.preventDefault(); setDragReady(false); onDrop(); }}>
       <div className="card-main">
         <header className="entry-header"><div className="entry-title"><span className="card-ordinal">{String(index + 1).padStart(2, "0")}</span><h3>{entry.title}</h3><code className="entry-id">ID {entry.id}</code></div><div className="entry-actions"><button className="icon-button" title="Edit" disabled={loadingEdit} onClick={(event) => { event.stopPropagation(); void openEditor(); }}><Icon name="edit" /></button><button className="icon-button danger" title="Delete" onClick={() => setDeletePending(true)}><Icon name="trash" /></button><DragDots label={`Move ${entry.title}`} onPointerDown={() => setDragReady(true)} onPointerUp={() => setDragReady(false)} onKeyDown={(event) => { if (!event.altKey || !["ArrowUp", "ArrowDown"].includes(event.key)) return; event.preventDefault(); move(event.key === "ArrowUp" ? -1 : 1); }} /></div></header>
-        <div className="entry-meta">{entry.project && <span className="project-tag">{entry.project}</span>}<span>v{entry.revision}</span><span>{dateTime(entry.updated_at)}</span></div>
-        <div className="field-list">{entry.fields.map((field, index) => <FieldValue key={field.id} entryId={entry.id} field={field} position={index + 1} toast={toast} />)}</div>
+        <div className="entry-meta">{entry.projects.map((project) => <span className="project-tag" key={project}>{project}</span>)}<span>v{entry.revision}</span><span>{dateTime(entry.updated_at)}</span></div>
+        <div className="field-list">{entry.fields.map((field, index) => <FieldValue key={field.id} entryId={entry.id} field={field} position={index + 1} toast={toast} onInteracted={onInteracted} />)}</div>
       </div>
     </article>
-    {editorFields && <EntryEditor entry={entry} initialFields={editorFields} toast={toast} onClose={() => setEditorFields(null)} onSaved={() => { setEditorFields(null); onChanged(); }} />}
+    {editorFields && <EntryEditor entry={entry} initialFields={editorFields} projectOptions={projectOptions} toast={toast} onClose={() => { setEditorFields(null); onChanged(); }} onSaved={() => { setEditorFields(null); onChanged(); }} />}
     {deletePending && <ConfirmDialog title={`Move “${entry.title}” to trash?`} body={<p>The entity will leave the vault and remain recoverable for the retention period configured in Settings. After that, all encrypted revisions will be permanently erased.</p>} confirmLabel="Move to trash" danger onClose={() => setDeletePending(false)} onConfirm={remove} />}
   </>;
 }
 
-export function VaultPage({ toast }: { toast: Toast }) {
+export function VaultPage({ rankingEnabled, toast }: { rankingEnabled: boolean; toast: Toast }) {
   const [entries, setEntries] = useState<Entry[]>([]);
   const [loading, setLoading] = useState(true);
   const [query, setQuery] = useState("");
@@ -378,16 +424,16 @@ export function VaultPage({ toast }: { toast: Toast }) {
   const [dragging, setDragging] = useState<string | null>(null);
   const [dropTarget, setDropTarget] = useState<{ id: string; before: boolean } | null>(null);
 
-  function load() {
-    setLoading(true);
+  function load(showLoader = false) {
+    if (showLoader) setLoading(true);
     api.entries().then((result) => setEntries(result.entries)).catch((error) => toast(errorMessage(error), "error")).finally(() => setLoading(false));
   }
-  useEffect(load, []);
+  useEffect(() => load(true), [rankingEnabled]);
 
-  const projects = useMemo(() => [...new Set(entries.map((entry) => entry.project).filter(Boolean) as string[])].sort(), [entries]);
+  const projects = useMemo(() => [...new Set(entries.flatMap((entry) => entry.projects))].sort(), [entries]);
   const visible = useMemo(() => {
     const needle = query.trim().toLocaleLowerCase("en-US");
-    return entries.filter((entry) => (project === "all" || entry.project === project) && (!needle || [entry.title, entry.project, ...entry.fields.map((field) => field.visibility === "plain" ? field.value : "")].some((value) => value?.toLocaleLowerCase("en-US").includes(needle))));
+    return entries.filter((entry) => (project === "all" || entry.projects.includes(project)) && (!needle || [entry.title, ...entry.projects, ...entry.fields.flatMap((field) => [field.key, field.visibility === "plain" ? field.value : ""])].some((value) => value?.toLocaleLowerCase("en-US").includes(needle))));
   }, [entries, project, query]);
 
   async function move(id: string, direction: -1 | 1) {
@@ -410,8 +456,8 @@ export function VaultPage({ toast }: { toast: Toast }) {
   }
 
   return <div className="page vault-page">
-    <div className="collection-command-bar" role="search" aria-label="Search and manage entries"><label className="search"><Icon name="search" /><input aria-label="Search entries" value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Title, project, or plain value" /></label><div className="collection-information"><strong>{visible.length} / {entries.length}</strong><span>entries</span><small>Secret values are excluded from search</small></div><button className="button" onClick={() => setEditor(true)}><Icon name="plus" />New entry</button><select aria-label="Filter by project" value={project} onChange={(event) => setProject(event.target.value)}><option value="all">All projects</option>{projects.map((value) => <option key={value} value={value}>{value}</option>)}</select></div>
-    {loading ? <div className="empty-state"><div className="loader" /><p>Opening vault…</p></div> : visible.length ? <div className="entry-grid">{visible.map((entry, index) => <EntryCard key={entry.id} index={index} entry={entry} toast={toast} onChanged={load} move={(direction) => move(entry.id, direction)} dragging={dragging} dropTarget={dropTarget} onDragStart={() => setDragging(entry.id)} onDragEnd={() => { setDragging(null); setDropTarget(null); }} onDragPosition={(before) => setDropTarget({ id: entry.id, before })} onDrop={() => dropEntry(entry.id, dropTarget?.id === entry.id ? dropTarget.before : true)} />)}</div> : <div className="empty-state"><div className="empty-icon"><Icon name="vault" /></div><h2>{entries.length ? "No results" : "Vault is empty"}</h2><p>{entries.length ? "Change the query or project filter." : "Create your first entry and add between one and five values."}</p>{!entries.length && <button className="button" onClick={() => setEditor(true)}><Icon name="plus" />Create entry</button>}</div>}
-    {editor && <EntryEditor entry={null} toast={toast} onClose={() => setEditor(false)} onSaved={() => { setEditor(false); load(); }} />}
+    <div className="collection-command-bar" role="search" aria-label="Search and manage entries"><SearchField label="Search entries" value={query} onChange={setQuery} placeholder="Title, project, key, or plain value" /><div className="collection-information"><strong>{visible.length} / {entries.length}</strong><span>entries</span><small>Secret values are excluded from search</small></div><button className="button" onClick={() => setEditor(true)}><Icon name="plus" />New entry</button><select aria-label="Filter by project" value={project} onChange={(event) => setProject(event.target.value)}><option value="all">All projects</option>{projects.map((value) => <option key={value} value={value}>{value}</option>)}</select></div>
+    {loading ? <div className="empty-state"><div className="loader" /><p>Opening vault…</p></div> : visible.length ? <div className="entry-grid">{visible.map((entry, index) => <EntryCard key={entry.id} index={index} entry={entry} projectOptions={projects} toast={toast} onChanged={load} onInteracted={load} move={(direction) => move(entry.id, direction)} dragging={dragging} dropTarget={dropTarget} onDragStart={() => setDragging(entry.id)} onDragEnd={() => { setDragging(null); setDropTarget(null); }} onDragPosition={(before) => setDropTarget({ id: entry.id, before })} onDrop={() => dropEntry(entry.id, dropTarget?.id === entry.id ? dropTarget.before : true)} />)}</div> : <div className="empty-state"><div className="empty-icon"><Icon name="vault" /></div><h2>{entries.length ? "No results" : "Vault is empty"}</h2><p>{entries.length ? "Change the query or project filter." : "Create your first entry and add between one and twenty values."}</p>{!entries.length && <button className="button" onClick={() => setEditor(true)}><Icon name="plus" />Create entry</button>}</div>}
+    {editor && <EntryEditor entry={null} projectOptions={projects} toast={toast} onClose={() => setEditor(false)} onSaved={() => { setEditor(false); load(); }} />}
   </div>;
 }

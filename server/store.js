@@ -61,10 +61,13 @@ function parseJson(value, fallback = null) {
 }
 
 function maskPayload(payload) {
+  const projects = Array.isArray(payload.projects)
+    ? payload.projects
+    : (payload.project ? [payload.project] : []);
   return {
     schema: payload.schema,
     title: payload.title,
-    project: payload.project,
+    projects,
     fields: payload.fields.map((field) => ({
       id: field.id,
       key: field.key,
@@ -72,12 +75,13 @@ function maskPayload(payload) {
       generator: field.generator ?? null,
       value: field.visibility === "secret" ? null : field.value,
       masked: field.visibility === "secret",
+      length: field.visibility === "secret" ? [...field.value].length : undefined,
     })),
   };
 }
 
 export function parseVoltReference(reference) {
-  const match = /^(?:volt:\/\/|secret:\/\/volt\/)([0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12})\/([1-5])$/i.exec(String(reference));
+  const match = /^(?:volt:\/\/|secret:\/\/volt\/)([0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12})\/([1-9]|1[0-9]|20)$/i.exec(String(reference));
   if (!match) throw domainError(400, "INVALID_VOLT_REFERENCE", "Expected volt://<entry-id>/<value-position>");
   return { entryId: match[1].toLowerCase(), fieldPosition: Number(match[2]) };
 }
@@ -106,6 +110,8 @@ export class VoltStore {
         id TEXT PRIMARY KEY,
         current_revision_id TEXT,
         position INTEGER NOT NULL DEFAULT 0,
+        activity_score INTEGER NOT NULL DEFAULT 0,
+        last_interacted_at TEXT,
         wrapped_key TEXT NOT NULL,
         key_nonce TEXT NOT NULL,
         key_tag TEXT NOT NULL,
@@ -145,6 +151,9 @@ export class VoltStore {
       CREATE INDEX IF NOT EXISTS idx_revisions_entry ON entry_revisions(entry_id, revision_number DESC);
       CREATE INDEX IF NOT EXISTS idx_audit_created ON audit_events(created_at DESC);
     `);
+    const entryColumns = new Set(this.db.prepare("PRAGMA table_info(entries)").all().map((column) => column.name));
+    if (!entryColumns.has("activity_score")) this.db.exec("ALTER TABLE entries ADD COLUMN activity_score INTEGER NOT NULL DEFAULT 0");
+    if (!entryColumns.has("last_interacted_at")) this.db.exec("ALTER TABLE entries ADD COLUMN last_interacted_at TEXT");
     // Service principals and field grants belonged to the retired direct-service
     // API. Kernel is now the sole machine principal for secret resolution.
     this.db.exec("DROP TABLE IF EXISTS grants; DROP TABLE IF EXISTS principals;");
@@ -152,6 +161,7 @@ export class VoltStore {
     if (!this.getSetting("appearance")) this.setSetting("appearance", "dark");
     if (!this.getSetting("accent_color")) this.setSetting("accent_color", DEFAULT_ACCENT);
     if (!this.getSetting("sidebar_mode")) this.setSetting("sidebar_mode", "fixed");
+    if (!this.getSetting("activity_ranking_enabled")) this.setSetting("activity_ranking_enabled", "0");
     if (!this.getSetting("navigation_order")) this.setSetting("navigation_order", JSON.stringify(DEFAULT_NAVIGATION_ORDER));
     if (!this.getSetting("settings_order")) this.setSetting("settings_order", JSON.stringify(DEFAULT_SETTINGS_ORDER));
     if (!this.getSetting("dashboard_order")) this.setSetting("dashboard_order", JSON.stringify(DEFAULT_DASHBOARD_ORDER));
@@ -256,6 +266,7 @@ export class VoltStore {
     return {
       accent: /^#[0-9A-F]{6}$/.test(accent) ? accent : DEFAULT_ACCENT,
       sidebar_mode: this.getSetting("sidebar_mode") === "auto" ? "auto" : "fixed",
+      activity_ranking_enabled: this.getSetting("activity_ranking_enabled") === "1",
       navigation_order: validOrder(navigationOrder, DEFAULT_NAVIGATION_ORDER) ? navigationOrder : [...DEFAULT_NAVIGATION_ORDER],
       settings_order: validOrder(settingsOrder, DEFAULT_SETTINGS_ORDER) ? settingsOrder : [...DEFAULT_SETTINGS_ORDER],
       dashboard_order: validOrder(dashboardOrder, DEFAULT_DASHBOARD_ORDER) ? dashboardOrder : [...DEFAULT_DASHBOARD_ORDER],
@@ -282,6 +293,12 @@ export class VoltStore {
       }
       next.sidebar_mode = update.sidebar_mode;
     }
+    if (update.activity_ranking_enabled !== undefined) {
+      if (typeof update.activity_ranking_enabled !== "boolean") {
+        throw domainError(400, "ACTIVITY_RANKING_INVALID", "Activity ranking must be enabled or disabled");
+      }
+      next.activity_ranking_enabled = update.activity_ranking_enabled;
+    }
     if (update.navigation_order !== undefined) {
       if (!validOrder(update.navigation_order, DEFAULT_NAVIGATION_ORDER)) {
         throw domainError(400, "NAVIGATION_ORDER_INVALID", "Navigation order must contain every primary destination exactly once");
@@ -305,6 +322,7 @@ export class VoltStore {
     try {
       this.setSetting("accent_color", next.accent);
       this.setSetting("sidebar_mode", next.sidebar_mode);
+      this.setSetting("activity_ranking_enabled", next.activity_ranking_enabled ? "1" : "0");
       this.setSetting("navigation_order", JSON.stringify(next.navigation_order));
       this.setSetting("settings_order", JSON.stringify(next.settings_order));
       this.setSetting("dashboard_order", JSON.stringify(next.dashboard_order));
@@ -475,6 +493,7 @@ export class VoltStore {
         throw domainError(409, "ENTRY_REVISION_CONFLICT", "Entry changed since it was opened");
       }
       const revision = this.#insertRevision(row, payload, { actor, reason });
+      this.#incrementEntryActivity(entryId, revision.createdAt);
       this.db.exec("COMMIT");
       this.audit({ actor, action: "entry.update", target: entryId, details: { revision: revision.revisionNumber, field_count: payload.fields.length } });
       return this.getEntry(entryId);
@@ -485,10 +504,13 @@ export class VoltStore {
   }
 
   listEntries() {
+    const order = this.getInterfaceSettings().activity_ranking_enabled
+      ? "e.activity_score DESC, e.last_interacted_at DESC, e.position, e.updated_at DESC"
+      : "e.position, e.updated_at DESC";
     const rows = this.db.prepare(`
       SELECT e.*, r.revision_number, r.ciphertext, r.nonce, r.tag
       FROM entries e JOIN entry_revisions r ON r.id = e.current_revision_id
-      WHERE e.deleted_at IS NULL ORDER BY e.position, e.updated_at DESC
+      WHERE e.deleted_at IS NULL ORDER BY ${order}
     `).all();
     return rows.map((row) => ({
       id: row.id,
@@ -592,6 +614,7 @@ export class VoltStore {
         reason: `restored revision ${revisionNumber}`,
         sourceRevisionId: revision.revision_id,
       });
+      this.#incrementEntryActivity(entryId, created.createdAt);
       this.db.exec("COMMIT");
       this.audit({ actor, action: "entry.restore", target: entryId, details: { source_revision: Number(revisionNumber), revision: created.revisionNumber } });
       return this.getEntry(entryId);
@@ -695,7 +718,7 @@ export class VoltStore {
     }
     this.db.exec("BEGIN IMMEDIATE");
     try {
-      const update = this.db.prepare("UPDATE entries SET position = ? WHERE id = ?");
+      const update = this.db.prepare("UPDATE entries SET position = ?, activity_score = 0, last_interacted_at = NULL WHERE id = ?");
       ids.forEach((id, index) => update.run(index, id));
       this.db.exec("COMMIT");
     } catch (error) {
@@ -703,6 +726,26 @@ export class VoltStore {
       throw error;
     }
     this.audit({ actor, action: "entry.reorder", details: { entry_count: ids.length } });
+  }
+
+  #incrementEntryActivity(entryId, interactedAt = isoNow()) {
+    if (!this.db.prepare("SELECT 1 FROM entries WHERE id = ? AND deleted_at IS NULL").get(entryId)) {
+      throw domainError(404, "ENTRY_NOT_FOUND", "Entry not found");
+    }
+    if (!this.getInterfaceSettings().activity_ranking_enabled) return false;
+    const result = this.db.prepare(`
+      UPDATE entries
+      SET activity_score = activity_score + 1, last_interacted_at = ?
+      WHERE id = ? AND deleted_at IS NULL
+    `).run(interactedAt, entryId);
+    if (!result.changes) throw domainError(404, "ENTRY_NOT_FOUND", "Entry not found");
+    return true;
+  }
+
+  recordEntryInteraction(entryId, action, { actor = "operator" } = {}) {
+    const allowed = new Set(["open", "copy.value", "copy.reference", "reveal"]);
+    if (!allowed.has(action)) throw domainError(400, "ENTRY_INTERACTION_INVALID", "Entry interaction is invalid");
+    return { recorded: this.#incrementEntryActivity(entryId), action, actor };
   }
 
   resolveReferences(references, { actor = "service:kernel" } = {}) {
@@ -750,7 +793,7 @@ export class VoltStore {
         ORDER BY key
       `).all(),
       entries: this.db.prepare(`
-        SELECT id, current_revision_id, position, wrapped_key, key_nonce, key_tag,
+        SELECT id, current_revision_id, position, activity_score, last_interacted_at, wrapped_key, key_nonce, key_tag,
                created_at, updated_at, deleted_at FROM entries ORDER BY position, id
       `).all(),
       revisions: this.db.prepare(`
@@ -829,10 +872,10 @@ export class VoltStore {
       if (preservedKernelTokenHash) settings.run("kernel_token_hash", preservedKernelTokenHash);
       settings.run("auth_generation", String(nextAuthGeneration));
       const entries = this.db.prepare(`
-        INSERT INTO entries(id, current_revision_id, position, wrapped_key, key_nonce, key_tag, created_at, updated_at, deleted_at)
-        VALUES(?, NULL, ?, ?, ?, ?, ?, ?, ?)
+        INSERT INTO entries(id, current_revision_id, position, activity_score, last_interacted_at, wrapped_key, key_nonce, key_tag, created_at, updated_at, deleted_at)
+        VALUES(?, NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       `);
-      for (const row of state.entries) entries.run(row.id, row.position, row.wrapped_key, row.key_nonce, row.key_tag, row.created_at, row.updated_at, row.deleted_at);
+      for (const row of state.entries) entries.run(row.id, row.position, Number(row.activity_score ?? 0), row.last_interacted_at ?? null, row.wrapped_key, row.key_nonce, row.key_tag, row.created_at, row.updated_at, row.deleted_at);
       const revisions = this.db.prepare(`
         INSERT INTO entry_revisions(id, entry_id, revision_number, parent_revision_id, source_revision_id, ciphertext, nonce, tag, actor, reason, created_at)
         VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)

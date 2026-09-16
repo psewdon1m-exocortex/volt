@@ -241,7 +241,7 @@ export function createApp({
       const previous = loginAttempts.get(ip) ?? { count: 0, blockedUntil: 0 };
       if (previous.blockedUntil > Date.now()) throw domainError(429, "TOO_MANY_ATTEMPTS", "Wait before trying again");
       const candidate = typeof request.body?.access_key === "string" ? request.body.access_key : "";
-      if (candidate.length > 512 || !verifyAccessKey(candidate, store.getSetting("access_key_hash"))) {
+      if (!verifyAccessKey(candidate, store.getSetting("access_key_hash"))) {
         const count = previous.count + 1;
         loginAttempts.set(ip, { count, blockedUntil: count >= 5 ? Date.now() + 60_000 : 0, lastAttempt: Date.now() });
         store.audit({ actor: networkActor(ip), action: "session.unlock", status: "denied" });
@@ -373,6 +373,10 @@ export function createApp({
       store.reorderEntries(request.body.ids);
       response.status(204).end();
     } catch (error) { next(error); }
+  });
+  app.post("/api/v1/entries/:entryId/interactions", requireSameOrigin, (request, response, next) => {
+    try { response.json(store.recordEntryInteraction(request.params.entryId, request.body?.action)); }
+    catch (error) { next(error); }
   });
   app.get("/api/v1/entries/:entryId", (request, response, next) => {
     try { response.json(store.getEntry(request.params.entryId)); } catch (error) { next(error); }
@@ -539,8 +543,8 @@ export function createApp({
       if (!verifyAccessKey(String(currentAccessKey ?? ""), store.getSetting("access_key_hash"))) {
         throw domainError(403, "CURRENT_ACCESS_KEY_INVALID", "Current Access Key is incorrect");
       }
-      if (typeof accessKey !== "string" || accessKey.length < 12 || accessKey.length > 512) {
-        throw domainError(400, "WEAK_ACCESS_KEY", "Access Key must contain between 12 and 512 characters");
+      if (typeof accessKey !== "string" || accessKey.length === 0) {
+        throw domainError(400, "ACCESS_KEY_REQUIRED", "Access Key must be supplied");
       }
       store.rotateAccessKey(accessKey, hashAccessKey(accessKey));
       response.clearCookie(COOKIE_NAME, { httpOnly: true, sameSite: "strict", secure: secureCookies, path: "/" });

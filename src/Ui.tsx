@@ -14,6 +14,56 @@ export function DragDots({ label, ...props }: React.ButtonHTMLAttributes<HTMLBut
   </button>;
 }
 
+export function SearchField({
+  value,
+  onChange,
+  label,
+  placeholder,
+  className = "",
+}: {
+  value: string;
+  onChange: (value: string) => void;
+  label: string;
+  placeholder: string;
+  className?: string;
+}) {
+  const inputRef = useRef<HTMLInputElement>(null);
+
+  function clear() {
+    onChange("");
+    window.requestAnimationFrame(() => inputRef.current?.focus());
+  }
+
+  return <div className={`search${className ? ` ${className}` : ""}`}>
+    <Icon name="search" />
+    <input
+      ref={inputRef}
+      type="search"
+      aria-label={label}
+      value={value}
+      onChange={(event) => onChange(event.target.value)}
+      onKeyDown={(event) => {
+        if (event.key === "Escape" && value) {
+          event.preventDefault();
+          clear();
+        }
+      }}
+      placeholder={placeholder}
+    />
+    <button
+      className={`search-clear${value ? " visible" : ""}`}
+      type="button"
+      aria-label="Clear search"
+      aria-hidden={!value}
+      disabled={!value}
+      tabIndex={value ? 0 : -1}
+      onClick={clear}
+    >
+      <Icon name="close" />
+    </button>
+  </div>;
+}
+
 export function Modal({
   title,
   eyebrow,

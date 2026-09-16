@@ -101,10 +101,8 @@ export function validateRuntimeConfig({ accessKey, masterKey, kernelToken, requi
   const issues = [];
   if ((requireAccessKey || accessKey != null) && (
     typeof accessKey !== "string"
-    || accessKey.length < 12
-    || accessKey.length > 512
-    || /(?:replace-with|change-this|example-password)/i.test(accessKey)
-  )) issues.push("VOLT_ACCESS_KEY must contain between 12 and 512 non-placeholder characters");
+    || accessKey.length === 0
+  )) issues.push("VOLT_ACCESS_KEY must be supplied as an exact, non-empty value");
   if (!Buffer.isBuffer(masterKey) || masterKey.length !== 32) {
     issues.push("The unlocked Volt vault master key must contain exactly 32 bytes");
   }

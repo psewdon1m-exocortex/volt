@@ -14,11 +14,11 @@ import {
   unlockPortableVault,
 } from "../server/vault-file.js";
 
-test("personal.volt opens offline with its Access Key and survives Access Key rotation", () => {
+test("personal.volt preserves exact Access Keys without length rules and survives rotation", () => {
   const directory = mkdtempSync(path.join(os.tmpdir(), "personal-volt-test-"));
   const filename = path.join(directory, "personal.volt");
-  const accessKey = "correct horse battery staple";
-  const nextAccessKey = "another correct battery staple";
+  const accessKey = " \tКлюч🙂:/?#[]@! ";
+  const nextAccessKey = "k".repeat(513);
   const deviceKey = randomBytes(32);
   try {
     const created = createPortableVault({ filename, accessKey, deviceKey });
@@ -40,6 +40,7 @@ test("personal.volt opens offline with its Access Key and survives Access Key ro
     assert.equal(copiedStore.revealField(entry.id, entry.fields[0].id).value, "offline-secret-value");
     copiedStore.close();
 
+    assert.throws(() => unlockPortableVault({ filename: portableCopy, accessKey: accessKey.trim() }), /could not be unlocked/);
     assert.throws(() => unlockPortableVault({ filename, accessKey }), /could not be unlocked/);
     assert.equal(unlockPortableVault({ filename, accessKey: nextAccessKey }).unlockedWith, "access-key");
     assert.equal(unlockPortableVault({ filename, deviceKey, allowDeviceUnlock: true }).unlockedWith, "device");

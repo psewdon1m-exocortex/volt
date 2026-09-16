@@ -13,7 +13,7 @@ import { VoltStore } from "../server/store.js";
 test("cold runtime stays locked with a device key and opens only after a valid operator Access Key", async () => {
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), "volt-locked-"));
   const filename = path.join(directory, "personal.volt");
-  const key = "synthetic-runtime-access-key";
+  const key = "k";
   const deviceKey = randomBytes(32);
   createPortableVault({ filename, accessKey: key, deviceKey }).masterKey.fill(0);
   let store;

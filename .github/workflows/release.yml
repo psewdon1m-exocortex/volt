@@ -95,7 +95,7 @@ jobs:
           volume="volt-release-${GITHUB_RUN_ID}"
           secret_dir="$(mktemp -d)"
           trap 'docker rm -f "$name" >/dev/null 2>&1 || true; docker volume rm "$volume" >/dev/null 2>&1 || true; rm -rf "$secret_dir"' EXIT
-          printf '%s\n' 'volt-release-access-key' > "$secret_dir/access.key"
+          printf '%s' 'volt-release-access-key' > "$secret_dir/access.key"
           chmod 0755 "$secret_dir"
           chmod 0444 "$secret_dir/access.key"
           docker pull "$IMAGE"

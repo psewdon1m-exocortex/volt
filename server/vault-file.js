@@ -38,8 +38,8 @@ function assertKey(key, name) {
 }
 
 function assertAccessKey(accessKey) {
-  if (typeof accessKey !== "string" || accessKey.length < 12 || accessKey.length > 512) {
-    throw vaultError("VAULT_ACCESS_KEY_INVALID", "Access Key must contain between 12 and 512 characters");
+  if (typeof accessKey !== "string" || accessKey.length === 0) {
+    throw vaultError("VAULT_ACCESS_KEY_INVALID", "Access Key must be supplied");
   }
 }
 

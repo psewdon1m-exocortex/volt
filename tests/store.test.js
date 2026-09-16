@@ -3,6 +3,7 @@ import { randomBytes, randomUUID } from "node:crypto";
 import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { DatabaseSync } from "node:sqlite";
 import test from "node:test";
 
 import { parseVoltReference, VoltStore } from "../server/store.js";
@@ -33,11 +34,41 @@ function entryPayload(value = "correct horse battery staple") {
   };
 }
 
+test("existing vault databases gain activity ranking columns without rewriting entries", () => {
+  const directory = mkdtempSync(path.join(os.tmpdir(), "volt-schema-upgrade-"));
+  const filename = path.join(directory, "volt.sqlite");
+  const legacy = new DatabaseSync(filename);
+  legacy.exec(`
+    CREATE TABLE entries (
+      id TEXT PRIMARY KEY,
+      current_revision_id TEXT,
+      position INTEGER NOT NULL DEFAULT 0,
+      wrapped_key TEXT NOT NULL,
+      key_nonce TEXT NOT NULL,
+      key_tag TEXT NOT NULL,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      deleted_at TEXT
+    );
+  `);
+  legacy.close();
+  const store = new VoltStore({ filename, masterKey: randomBytes(32) });
+  try {
+    const columns = store.db.prepare("PRAGMA table_info(entries)").all().map((column) => column.name);
+    assert.equal(columns.includes("activity_score"), true);
+    assert.equal(columns.includes("last_interacted_at"), true);
+  } finally {
+    store.close();
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
 test("entry values are encrypted and list responses mask secret fields", () => withStore((store, filename) => {
   const plaintext = "volt-test-secret-that-must-not-leak";
   const entry = store.createEntry(entryPayload(plaintext));
   assert.equal(entry.fields[1].value, null);
   assert.equal(entry.fields[1].masked, true);
+  assert.equal(entry.fields[1].length, [...plaintext].length);
   assert.equal(store.revealField(entry.id, entry.fields[1].id).value, plaintext);
   store.checkpoint();
   assert.equal(readFileSync(filename).includes(Buffer.from(plaintext)), false);
@@ -147,6 +178,26 @@ test("value names no longer need to be unique within an entry", () => {
   assert.notEqual(normalized.fields[0].id, normalized.fields[1].id);
 });
 
+test("entries accept 20 key-value pairs and references resolve position 20 without the decorative key", () => withStore((store) => {
+  const fields = Array.from({ length: 20 }, (_, index) => ({
+    key: `label-${index + 1}`,
+    value: `stored-value-${index + 1}`,
+    visibility: index % 2 ? "secret" : "plain",
+  }));
+  const normalized = normalizeEntryPayload({ title: "Twenty values", fields });
+  assert.equal(normalized.fields.length, 20);
+  const entry = store.createEntry(normalized);
+  const reference = `volt://${entry.id}/20`;
+  assert.equal(parseVoltReference(reference).fieldPosition, 20);
+  assert.deepEqual(store.resolveReferences([reference]).values[reference], {
+    value: "stored-value-20",
+    revision: 1,
+    visibility: "secret",
+  });
+  assert.throws(() => normalizeEntryPayload({ title: "Too many", fields: [...fields, { key: "label-21", value: "stored-value-21" }] }), { code: "INVALID_ENTRY" });
+  assert.throws(() => parseVoltReference(`volt://${entry.id}/21`), { code: "INVALID_VOLT_REFERENCE" });
+}));
+
 test("optimistic concurrency rejects stale edits", () => withStore((store) => {
   const created = store.createEntry(entryPayload("v1"));
   const next = entryPayload("v2");
@@ -159,12 +210,14 @@ test("logical backup round-trips ciphertext and history without machine credenti
   source.setSetting("access_key_hash", "source-access-verifier");
   source.setSetting("kernel_token_hash", "a".repeat(64));
   const entry = source.createEntry(entryPayload("backup-secret"));
+  source.setInterfaceSettings({ activity_ranking_enabled: true });
   const next = entryPayload("backup-secret-v2");
   next.fields = next.fields.map((field, index) => ({ ...field, id: entry.fields[index].id }));
   source.updateEntry(entry.id, next, { expectedRevision: 1 });
   const masterKey = source.masterKey;
   const archive = buildBackupArchive(source.exportLogicalState());
   const parsed = parseBackupArchive(Buffer.from(archive));
+  assert.equal(parsed.state.entries[0].activity_score, 1);
   assert.equal(parsed.state.settings.some((row) => row.key === "access_key_hash"), false);
   assert.equal(parsed.state.settings.some((row) => row.key === "kernel_token_hash"), false);
 
@@ -177,6 +230,7 @@ test("logical backup round-trips ciphertext and history without machine credenti
     assert.equal(restored.getSetting("access_key_hash"), "destination-access-verifier");
     assert.equal(restored.getSetting("kernel_token_hash"), "b".repeat(64));
     assert.equal(restored.getEntry(entry.id).revision, 2);
+    assert.equal(restored.exportLogicalState().entries[0].activity_score, 1);
     assert.equal(restored.revealField(entry.id, entry.fields[1].id, { revisionNumber: 1 }).value, "backup-secret");
     assert.equal(Object.hasOwn(parsed.state, "principals"), false);
     assert.equal(Object.hasOwn(parsed.state, "grants"), false);
@@ -190,6 +244,7 @@ test("interface settings persist validated orders and reject low-contrast accent
   assert.deepEqual(store.getInterfaceSettings(), {
     accent: "#00A8FF",
     sidebar_mode: "fixed",
+    activity_ranking_enabled: false,
     navigation_order: ["dashboard", "vault", "trash", "audit", "settings"],
     settings_order: ["appearance", "security", "backup", "updates", "logs", "cryptography"],
     dashboard_order: ["cpu", "memory", "disk", "uptime", "entities"],
@@ -197,11 +252,51 @@ test("interface settings persist validated orders and reject low-contrast accent
   const changed = store.setInterfaceSettings({
     accent: "#62ff8c",
     sidebar_mode: "auto",
+    activity_ranking_enabled: true,
     dashboard_order: ["uptime", "cpu", "memory", "disk", "entities"],
   });
   assert.equal(changed.accent, "#62FF8C");
   assert.equal(changed.sidebar_mode, "auto");
+  assert.equal(changed.activity_ranking_enabled, true);
   assert.deepEqual(store.getInterfaceSettings().dashboard_order, ["uptime", "cpu", "memory", "disk", "entities"]);
   assert.throws(() => store.setInterfaceSettings({ accent: "#111111" }), { code: "ACCENT_CONTRAST_LOW" });
   assert.throws(() => store.setInterfaceSettings({ navigation_order: ["dashboard", "vault"] }), { code: "NAVIGATION_ORDER_INVALID" });
+}));
+
+test("entries support multiple projects while legacy single-project revisions remain readable", () => withStore((store) => {
+  const legacy = store.createEntry(entryPayload("legacy-secret"));
+  assert.deepEqual(legacy.projects, ["personal"]);
+
+  const normalized = normalizeEntryPayload({
+    title: "Shared service account",
+    projects: ["infrastructure", "billing"],
+    fields: [{ key: "token", value: "shared-secret", visibility: "secret" }],
+  });
+  const shared = store.createEntry(normalized);
+  assert.deepEqual(shared.projects, ["infrastructure", "billing"]);
+  assert.throws(() => normalizeEntryPayload({
+    title: "Duplicate project",
+    projects: ["Platform", "platform"],
+    fields: [{ key: "value", value: "x" }],
+  }), { code: "INVALID_ENTRY" });
+}));
+
+test("activity ranking raises frequently used entries and manual reorder creates a new baseline", () => withStore((store) => {
+  const first = store.createEntry({ ...entryPayload("first"), title: "First" });
+  const second = store.createEntry({ ...entryPayload("second"), title: "Second" });
+  const third = store.createEntry({ ...entryPayload("third"), title: "Third" });
+  assert.equal(store.recordEntryInteraction(second.id, "copy.value").recorded, false);
+  store.setInterfaceSettings({ activity_ranking_enabled: true });
+  assert.deepEqual(store.listEntries().map((entry) => entry.id), [first.id, second.id, third.id]);
+
+  store.recordEntryInteraction(second.id, "copy.value");
+  store.recordEntryInteraction(second.id, "open");
+  store.recordEntryInteraction(third.id, "reveal");
+  assert.deepEqual(store.listEntries().map((entry) => entry.id), [second.id, third.id, first.id]);
+
+  store.reorderEntries([first.id, third.id, second.id]);
+  assert.deepEqual(store.listEntries().map((entry) => entry.id), [first.id, third.id, second.id]);
+  store.recordEntryInteraction(second.id, "copy.reference");
+  assert.deepEqual(store.listEntries().map((entry) => entry.id), [second.id, first.id, third.id]);
+  assert.throws(() => store.recordEntryInteraction(first.id, "unknown"), { code: "ENTRY_INTERACTION_INVALID" });
 }));
