@@ -29,7 +29,12 @@ test("Volt release discovery, updater install, job control and rollback restore 
     updated_at: new Date().toISOString(),
   };
   const updaterClient = {
-    status: async () => ({ status: "ok", service: "updater", version: "0.3.0" }),
+    status: async () => ({ status: "ok", service: "updater", version: "0.3.0", update_protocol: 2 }),
+    request: async (method, route, payload) => {
+      if (route === "/v2/check") return {available_version:"0.2.0",update_available:true};
+      if (route === "/v2/updates") { submitted={version:payload.version,filename:payload.backup.filename,backup:Buffer.from(payload.backup.data_base64,"base64")}; return {...completedJob,state:"REQUESTED"}; }
+      throw new Error("Unexpected route " + route);
+    },
     createUpdate: async (version, filename, backup) => {
       submitted = { version, filename, backup };
       return { ...completedJob, state: "REQUESTED" };
@@ -100,10 +105,16 @@ test("Volt release discovery, updater install, job control and rollback restore 
   assert.equal(calls[0].init.headers.Authorization, "Bearer kernel-service-token");
   assert.deepEqual(JSON.parse(calls[0].init.body), { keys: ["repositories.volt.url"] });
 
-  const installed = await fetch(`${base}/api/v1/update/install`, { method: "POST", headers: { cookie, "content-type": "application/json" }, body: JSON.stringify({ version: "0.2.0" }) });
-  assert.equal(installed.status, 202);
-  assert.equal(submitted.version, "0.2.0");
-  assert.match(submitted.filename, /^volt-pre-update-\d{14}\.zip$/);
+  assert.equal((await fetch(`${base}/api/v1/update/install`, {method:"POST",headers:{cookie,"content-type":"application/json"},body:JSON.stringify({version:"0.2.0"})})).status,426);
+  const downloaded = await fetch(`${base}/api/v1/update-flow/backup`, {method:"POST",headers:{cookie,"content-type":"application/json"},body:JSON.stringify({version:"0.2.0"})});
+  assert.equal(downloaded.status,200);const receipt=downloaded.headers.get("x-update-receipt"), bytes=Buffer.from(await downloaded.arrayBuffer());
+  const headers={cookie,"content-type":"application/octet-stream","x-update-receipt":receipt};
+  assert.equal((await fetch(`${base}/api/v1/update-flow/install/volt`,{method:"POST",headers,body:bytes})).status,400);
+  headers["x-update-saved"]="1";
+  assert.equal((await fetch(`${base}/api/v1/update-flow/install/volt`,{method:"POST",headers,body:Buffer.from("wrong bytes")})).status,400);
+  const installed=await fetch(`${base}/api/v1/update-flow/install/volt`,{method:"POST",headers,body:bytes});
+  assert.equal(installed.status,202);assert.deepEqual(submitted.backup,bytes);
+  assert.equal(submitted.version,"0.2.0");assert.match(submitted.filename,/^volt-.*\.zip$/);
   const preUpdateBackup = parseBackupArchive(submitted.backup);
   assert.equal(preUpdateBackup.manifest.source_version, "0.1.0");
   assert.equal(preUpdateBackup.manifest.scope, "complete");

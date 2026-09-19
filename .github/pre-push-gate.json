@@ -20,7 +20,10 @@
       "evidence": [
         "DEPLOYMENT_READINESS.md",
         "server/updater-client.js",
-        "src/SelfUpdateButton.tsx"
+        "server/update-flow.js",
+        "src/update-flow.ts",
+        "src/update-overlay.js",
+        "tests/api.test.js"
       ]
     },
     "internal_documentation": {

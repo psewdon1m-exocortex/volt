@@ -41,6 +41,7 @@ function request(socketPath, token, route, body, timeout, method = "POST") {
 
 export function createUpdaterClient({ socketPath, controlToken, headId }) {
   return {
+    request: (method, route, body) => request(socketPath, controlToken, route, body, 90_000, method),
     status: () => request(socketPath, "", "/v1/health", null, 3_000, "GET"),
     createUpdate: (version, filename, backup) => {
       const checksum = createHash("sha256").update(backup).digest("hex");

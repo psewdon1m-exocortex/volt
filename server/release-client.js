@@ -87,7 +87,7 @@ export async function checkGithubRelease({ repositoryUrl, service, currentVersio
   const candidates = releases
     .filter((release) => !release?.draft && !release?.prerelease && String(release?.tag_name ?? "").toLowerCase().startsWith(prefix.toLowerCase()))
     .map((release) => ({ release, version: String(release.tag_name).slice(prefix.length) }))
-    .filter((item) => parseVersion(item.version))
+    .filter((item) => /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/.test(item.version))
     .sort((left, right) => compareVersions(right.version, left.version));
   const available = candidates.find((item) => compareVersions(item.version, currentVersion) > 0);
   return {

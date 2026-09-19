@@ -72,7 +72,9 @@ test("a stale startup key degrades to locked mode and the current Access Key unl
       body: JSON.stringify({ access_key: currentAccessKey }),
     });
     assert.equal(unlocked.status, 200);
-    assert.equal((await fetch(`${base}/api/v1/health`)).status, 200);
+    const ready = await fetch(`${base}/api/v1/health`);
+    assert.equal(ready.status, 200);
+    assert.equal((await ready.json()).version, JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8")).version);
     assert.equal(readFileSync(accessKeyFilename, "utf8"), currentAccessKey);
     assert.match(output.join(""), /Volt will start locked/);
   } finally {

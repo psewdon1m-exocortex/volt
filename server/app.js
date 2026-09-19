@@ -1,3 +1,4 @@
+import { mountUpdateFlow } from "./update-flow.js";
 import { existsSync, readFileSync } from "node:fs";
 import path from "node:path";
 import { createHash, createHmac, randomUUID, timingSafeEqual } from "node:crypto";
@@ -219,7 +220,6 @@ export function createApp({
     kernelServiceToken,
     service,
     currentVersion,
-    version: appVersion,
     fetchImpl: releaseFetch,
     timeoutMs: updateCheckTimeoutMs,
   });
@@ -231,7 +231,7 @@ export function createApp({
   );
 
   app.get("/api/v1/health", (_request, response) => {
-    response.json({ status: "ok", service: "volt", schema: "volt.health.v1" });
+    response.json({ status: "ok", service: "volt", schema: "volt.health.v1", version: appVersion });
   });
   app.get("/health/live", (_request, response) => response.json({ status: "ok", locked: false }));
 
@@ -476,22 +476,12 @@ export function createApp({
       response.status(202).json(await updaterClient.selfUpdate());
     } catch (error) { next(error); }
   });
-  app.post("/api/v1/update/install", requireSameOrigin, async (request, response, next) => {
-    try {
-      if (!updaterClient) throw domainError(503, "UPDATER_NOT_CONFIGURED", "Updater is not configured");
-      const version = String(request.body?.version ?? "");
-      if (!/^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/.test(version)) throw domainError(400, "RELEASE_VERSION_INVALID", "Select a valid Volt release version");
-      const candidate = await checkRelease("volt", appVersion);
-      if (!candidate.update_available || candidate.available_version !== version) {
-        throw domainError(409, "RELEASE_CHANGED", "Requested Volt version is not the current upgrade candidate");
-      }
-      const backup = Buffer.from(buildBackupArchive(store.exportLogicalState(), appVersion, store.createPortableSnapshot()));
-      const stamp = new Date().toISOString().replace(/[-:TZ.]/g, "").slice(0, 14);
-      const job = await updaterClient.createUpdate(version, `volt-pre-update-${stamp}.zip`, backup);
-      store.audit({ actor: "operator", action: "updater.install", target: version, details: { job_id: job.id ?? null } });
-      response.status(202).json(job);
-    } catch (error) { next(error); }
+  mountUpdateFlow(app, { prefix: "/api/v1/update-flow", service: "volt", authorize: requireOperator, mutation: [requireSameOrigin],
+    headId: process.env.UPDATER_HEAD_ID || process.env.UPDATER_REGISTERED_HEAD_ID || "volt", token: () => updaterControlToken,
+    client: updaterClient ?? { status: async () => { throw domainError(503, "UPDATER_UNAVAILABLE", "Updater is not configured"); } },
+    buildBackup: () => ({ archive: Buffer.from(buildBackupArchive(store.exportLogicalState(), appVersion, store.createPortableSnapshot())), filename: `volt-${new Date().toISOString().replaceAll(":", "-")}.zip` }),
   });
+  app.post("/api/v1/update/install", requireSameOrigin, (_req, res) => res.status(426).json({error: "Use the Updates dialog to save and return the same pre-update ZIP"}));
   app.get("/api/v1/update/jobs/:jobId", async (request, response, next) => {
     try {
       if (!updaterClient) throw domainError(503, "UPDATER_NOT_CONFIGURED", "Updater is not configured");
