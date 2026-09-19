@@ -11,6 +11,7 @@ import multer from "multer";
 import { buildBackupArchive, MAX_COMPRESSED_BYTES, parseBackupArchive } from "./backup.js";
 import { generateValue } from "./generators.js";
 import { checkRegisteredRelease, resolveRepositoryUrl } from "./release-client.js";
+import { inspectWyvern, publishWyvern } from "./wyvern.js";
 import {
   createSessionToken,
   hashAccessKey,
@@ -331,6 +332,13 @@ export function createApp({
       });
       next(error);
     }
+  });
+
+  app.post("/api/v1/internal/kernel/wyvern/inspect", requireKernel, (request, response, next) => {
+    try { response.json(inspectWyvern(store, request.body?.instance_id)); } catch (error) { next(error); }
+  });
+  app.post("/api/v1/internal/kernel/wyvern/publish", requireKernel, (request, response, next) => {
+    try { response.json(publishWyvern(store, request.body)); } catch (error) { next(error); }
   });
 
   app.post("/api/v1/internal/updater/restore", requireUpdater, backupUpload.single("file"), (request, response, next) => {

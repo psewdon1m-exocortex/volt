@@ -1,0 +1,9 @@
+{
+  "schema": "exocortex.wyvern.vendored-contract.v1",
+  "config_schema": "exocortex.wyvern.config.v1",
+  "files": {
+    "config.js": "2bd3fc3bd4f8d5fb51c3b3747c3afe18cc2800428cf335d8e3fc1ce4fb62cfcc",
+    "util.js": "696a307c99aa85e2d1c6fae5fc03c277c6e8fc13705849669ec3c7d30bc671ee",
+    "errors.js": "a5ddcee96ae5287318d6caf63aa7a52ca47eb3b94d79b005cc5eb2337485f627"
+  }
+}

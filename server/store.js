@@ -503,7 +503,7 @@ export class VoltStore {
     const sealed = encryptRevision(entryKey, entryId, revisionId, payload);
     const createdAt = isoNow();
     const position = Number(this.db.prepare("SELECT COALESCE(MAX(position), -1) + 1 AS next FROM entries").get().next);
-    this.db.exec("BEGIN IMMEDIATE");
+    this.db.exec("SAVEPOINT entry_write");
     try {
       this.db.prepare(`
         INSERT INTO entries(
@@ -517,9 +517,9 @@ export class VoltStore {
         ) VALUES(?, ?, 1, NULL, NULL, ?, ?, ?, ?, ?, ?)
       `).run(revisionId, entryId, sealed.ciphertext, sealed.nonce, sealed.tag, actor, reason, createdAt);
       this.db.prepare("UPDATE entries SET current_revision_id = ? WHERE id = ?").run(revisionId, entryId);
-      this.db.exec("COMMIT");
+      this.db.exec("RELEASE entry_write");
     } catch (error) {
-      this.db.exec("ROLLBACK");
+      this.db.exec("ROLLBACK TO entry_write; RELEASE entry_write");
       throw error;
     }
     this.audit({ actor, action: "entry.create", target: entryId, details: { revision: 1, field_count: payload.fields.length } });
@@ -527,7 +527,7 @@ export class VoltStore {
   }
 
   updateEntry(entryId, payload, { expectedRevision, actor = "operator", reason = "updated" } = {}) {
-    this.db.exec("BEGIN IMMEDIATE");
+    this.db.exec("SAVEPOINT entry_write");
     try {
       const row = this.#entryRow(entryId);
       if (expectedRevision != null && Number(expectedRevision) !== Number(row.revision_number)) {
@@ -535,11 +535,11 @@ export class VoltStore {
       }
       const revision = this.#insertRevision(row, payload, { actor, reason });
       this.#incrementEntryActivity(entryId, revision.createdAt);
-      this.db.exec("COMMIT");
+      this.db.exec("RELEASE entry_write");
       this.audit({ actor, action: "entry.update", target: entryId, details: { revision: revision.revisionNumber, field_count: payload.fields.length } });
       return this.getEntry(entryId);
     } catch (error) {
-      this.db.exec("ROLLBACK");
+      this.db.exec("ROLLBACK TO entry_write; RELEASE entry_write");
       throw error;
     }
   }
