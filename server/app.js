@@ -1,4 +1,5 @@
 import { mountUpdateFlow } from "./update-flow.js";
+import { createBackupPolicy } from "./backup-policy.js";
 import { existsSync, readFileSync } from "node:fs";
 import path from "node:path";
 import { createHash, createHmac, randomUUID, timingSafeEqual } from "node:crypto";
@@ -117,6 +118,15 @@ export function createApp({
   updateCheckTimeoutMs = 5_000,
 }) {
   const app = express();
+  const backupPolicy = createBackupPolicy({
+    client: neptuneClient, configured: () => Boolean(neptuneExportTokenFile),
+    readPending: () => JSON.parse(store.getSetting("backup_policy_restore") || "null"),
+    writePending: value => store.setSetting("backup_policy_restore", JSON.stringify(value)),
+  });
+  const currentBackup = async () => {
+    const intent = await backupPolicy.exportIntent();
+    return buildBackupArchive({ ...store.exportLogicalState(), backup_policy: intent }, appVersion, store.createPortableSnapshot());
+  };
   app.disable("x-powered-by");
   if (trustProxy) app.set("trust proxy", trustProxy);
 
@@ -280,7 +290,7 @@ export function createApp({
     response.status(204).end();
   });
 
-  app.post("/api/v1/internal/neptune/backup", (request, response, next) => {
+  app.head(["/api/v1/internal/neptune/backup", "/api/v1/internal/neptune/mirror"], (request, response, next) => {
     try {
       if (!neptuneExportTokenFile) throw domainError(503, "NEPTUNE_NOT_CONFIGURED", "Neptune export token is not configured");
       let expected;
@@ -289,7 +299,22 @@ export function createApp({
       const supplied = bearerToken(request) ?? "";
       const authorized = supplied.length === expected.length && supplied.length > 0 && timingSafeEqual(Buffer.from(supplied), Buffer.from(expected));
       if (!authorized) throw domainError(401, "NEPTUNE_UNAUTHORIZED", "Invalid Neptune export token");
-      const archive = buildBackupArchive(store.exportLogicalState(), appVersion, store.createPortableSnapshot());
+      store.db.prepare("SELECT 1").get();
+      response.set("X-Neptune-Ready", "1").status(204).end();
+    } catch (error) { next(error); }
+  });
+
+  app.post("/api/v1/internal/neptune/backup", async (request, response, next) => {
+    try {
+      if (!neptuneExportTokenFile) throw domainError(503, "NEPTUNE_NOT_CONFIGURED", "Neptune export token is not configured");
+      let expected;
+      try { expected = readFileSync(neptuneExportTokenFile, "utf8").trim(); }
+      catch { throw domainError(503, "NEPTUNE_NOT_CONFIGURED", "Neptune export token is unavailable"); }
+      const supplied = bearerToken(request) ?? "";
+      const authorized = supplied.length === expected.length && supplied.length > 0 && timingSafeEqual(Buffer.from(supplied), Buffer.from(expected));
+      if (!authorized) throw domainError(401, "NEPTUNE_UNAUTHORIZED", "Invalid Neptune export token");
+      backupPolicy.assertExportReady();
+      const archive = await currentBackup();
       store.audit({ actor: "service:neptune", action: "backup.export" });
       response.set({ "Content-Type": "application/zip", "Content-Length": String(archive.byteLength), "Cache-Control": "no-store" });
       response.send(Buffer.from(archive));
@@ -305,6 +330,7 @@ export function createApp({
       const supplied = bearerToken(request) ?? "";
       const authorized = supplied.length === expected.length && supplied.length > 0 && timingSafeEqual(Buffer.from(supplied), Buffer.from(expected));
       if (!authorized) throw domainError(401, "NEPTUNE_UNAUTHORIZED", "Invalid Neptune export token");
+      backupPolicy.assertExportReady();
       const snapshot = store.createPortableSnapshot();
       store.audit({ actor: "service:neptune", action: "mirror.export", target: "personal.volt" });
       response.set({
@@ -425,7 +451,7 @@ export function createApp({
     try { response.json(await generateValue(request.body)); } catch (error) { next(error); }
   });
 
-  app.get("/api/v1/audit", (request, response) => response.json({ events: store.listAudit(request.query.limit) }));
+  app.get("/api/v1/audit", (request, response) => response.json({ events: store.listAudit(request.query.limit, request.query.before_id ?? null) }));
   app.get("/api/v1/logs/archive", (_request, response, next) => {
     try {
       store.audit({ actor: "operator", action: "logs.export" });
@@ -487,7 +513,7 @@ export function createApp({
   mountUpdateFlow(app, { prefix: "/api/v1/update-flow", service: "volt", authorize: requireOperator, mutation: [requireSameOrigin],
     headId: process.env.UPDATER_HEAD_ID || process.env.UPDATER_REGISTERED_HEAD_ID || "volt", token: () => updaterControlToken,
     client: updaterClient ?? { status: async () => { throw domainError(503, "UPDATER_UNAVAILABLE", "Updater is not configured"); } },
-    buildBackup: () => ({ archive: Buffer.from(buildBackupArchive(store.exportLogicalState(), appVersion, store.createPortableSnapshot())), filename: `volt-${new Date().toISOString().replaceAll(":", "-")}.zip` }),
+    buildBackup: async () => ({ archive: Buffer.from(await currentBackup()), filename: `volt-${new Date().toISOString().replaceAll(":", "-")}.zip` }),
   });
   app.post("/api/v1/update/install", requireSameOrigin, (_req, res) => res.status(426).json({error: "Use the Updates dialog to save and return the same pre-update ZIP"}));
   app.get("/api/v1/update/jobs/:jobId", async (request, response, next) => {
@@ -608,12 +634,16 @@ export function createApp({
   app.get("/api/v1/neptune/availability", async (_request, response, next) => {
     try { response.json(await neptuneClient.availability()); } catch (error) { next(error); }
   });
+  app.get("/api/v1/neptune/policy", async (_req, res) => res.json(await backupPolicy.read()));
+  app.put("/api/v1/neptune/policy", requireSameOrigin, async (req, res) => res.json(await backupPolicy.mutate(req.body)));
+  app.get("/api/v1/neptune/policy/runs", async (_req, res) => res.json(await backupPolicy.runs()));
+  app.post("/api/v1/neptune/policy/runs", requireSameOrigin, async (req, res) => res.status(202).json(await backupPolicy.runs("POST", req.body)));
   app.post("/api/v1/neptune/initialize", requireSameOrigin, async (request, response, next) => {
     try {
       const code = String(request.body?.enrollment_code ?? "").trim();
       if (!/^[A-Za-z0-9_-]{32}$/.test(code)) throw domainError(400, "NEPTUNE_CODE_INVALID", "Enter a valid 32-character Saturn setup code");
       if (!updaterClient) throw domainError(503, "UPDATER_NOT_CONFIGURED", "Updater is not configured");
-      const job = await updaterClient.initializeNeptune(code, neptuneExportUrl);
+      const job = await updaterClient.initializeNeptune(code, neptuneExportUrl, request.body?.request_id);
       store.audit({ actor: "operator", action: "neptune.initialize", target: String(job.id ?? "accepted") });
       response.status(202).json(job);
     } catch (error) { next(error); }
@@ -626,19 +656,11 @@ export function createApp({
       response.json(await updaterClient.neptuneInitialization(jobId));
     } catch (error) { next(error); }
   });
-  app.put("/api/v1/neptune/schedule", requireSameOrigin, async (request, response, next) => {
-    try {
-      const enabled = request.body?.enabled;
-      const intervalHours = Number(request.body?.interval_hours);
-      if (typeof enabled !== "boolean" || !Number.isInteger(intervalHours) || intervalHours < 1 || intervalHours > 8760) {
-        throw domainError(400, "NEPTUNE_INTERVAL_INVALID", "Interval must be a whole number of hours between 1 and 8760");
-      }
-      await neptuneClient.schedule(enabled, intervalHours);
-      response.status(204).end();
-    } catch (error) { next(error); }
+  app.put("/api/v1/neptune/schedule", requireSameOrigin, (_req, res) => {
+    res.status(426).json({ message: "Use the service backup policy with a revision and request ID" });
   });
-  app.post("/api/v1/neptune/runs", requireSameOrigin, async (_request, response, next) => {
-    try { response.status(202).json(await neptuneClient.run()); } catch (error) { next(error); }
+  app.post("/api/v1/neptune/runs", requireSameOrigin, (_req, res) => {
+    res.status(426).json({ message: "Use the scoped policy run endpoint with a stable request ID" });
   });
   app.post("/api/v1/neptune/update/check", requireSameOrigin, async (_request, response, next) => {
     try {
@@ -675,10 +697,10 @@ export function createApp({
     try { response.json(store.getPortableVaultInfo()); } catch (error) { next(error); }
   });
 
-  app.get("/api/v1/backup", (_request, response, next) => {
+  app.get("/api/v1/backup", async (_request, response, next) => {
     try {
       store.audit({ actor: "operator", action: "backup.export" });
-      const archive = buildBackupArchive(store.exportLogicalState(), appVersion, store.createPortableSnapshot());
+      const archive = await currentBackup();
       response.set({
         "Content-Type": "application/zip",
         "Content-Disposition": `attachment; filename="volt-backup-${new Date().toISOString().slice(0, 10)}.zip"`,

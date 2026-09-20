@@ -64,8 +64,8 @@ export function createUpdaterClient({ socketPath, controlToken, headId }) {
     rollback: (jobId) => request(socketPath, controlToken, `/v1/jobs/${encodeURIComponent(jobId)}/rollback`, null, 30_000),
     checkNeptune: (currentVersion) => request(socketPath, controlToken, "/v1/components/neptune-linux/check", { head_id: headId, current_version: currentVersion }, 30_000),
     updateNeptune: (version) => request(socketPath, controlToken, "/v1/components/neptune-linux/update", { head_id: headId, version }, 300_000),
-    initializeNeptune: (enrollmentCode, exportUrl) => request(socketPath, controlToken, "/v1/components/neptune-linux/initialize", {
-      request_id: randomUUID(), head_id: headId, project_id: "volt", export_url: exportUrl, enrollment_code: enrollmentCode,
+    initializeNeptune: (enrollmentCode, exportUrl, requestId = randomUUID()) => request(socketPath, controlToken, "/v1/components/neptune-linux/initialize", {
+      request_id: requestId, head_id: headId, project_id: "volt", export_url: exportUrl, enrollment_code: enrollmentCode,
     }, 30_000),
     neptuneInitialization: (jobId) => request(socketPath, controlToken, `/v1/components/neptune-linux/initializations/${encodeURIComponent(jobId)}?head_id=${encodeURIComponent(headId)}`, null, 5_000, "GET"),
   };

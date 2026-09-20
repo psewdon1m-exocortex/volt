@@ -1,11 +1,12 @@
-import { pendingAgentJob, waitForAgentJob } from "./agent-job";
+import { ServiceLogsPanel } from "./ServiceLogsPanel";
+import { openAgentInitialization, type InitializationJob } from "./agent-initialize.js";
+import { BackupPolicyPanel } from "./service-agents";
 import { openVoltUpdates } from "./update-flow";
 import { useCallback, useEffect, useState } from "react";
 
-import { api, type InterfaceSettings, type KernelStatus, type NeptuneAvailability, type NeptuneInitializationJob, type TrashSettings } from "./api";
+import { api, request, type InterfaceSettings, type KernelStatus, type NeptuneAvailability, type TrashSettings } from "./api";
 import { ConfirmDialog } from "./ConfirmDialog";
 import { Icon } from "./icons";
-import type { AuditEvent } from "./types";
 import { DragDots, Modal } from "./Ui";
 import { applyAccent, downloadBlob, errorMessage, formatDate, moveItem, type Toast } from "./ui-helpers";
 
@@ -16,10 +17,6 @@ function StatusRow({ label, text, ok }: { label: string; text: string; ok?: bool
   return <div className="status-row"><span>{label}</span><strong className={ok === false ? "danger-text" : ok ? "ok-text" : ""}>{text}{ok === undefined ? null : <span className={`status-square${ok ? "" : " offline"}`} />}</strong></div>;
 }
 
-
-async function waitForNeptuneInitialization(initial: NeptuneInitializationJob) {
-  return waitForAgentJob(initial, api.neptuneInitialization);
-}
 
 function SettingCard({ id, index, title, description, children, dragging, dropTarget, onMove, onDragStart, onDragEnd, onDragPosition, onDrop }: {
   id: SectionId;
@@ -69,15 +66,11 @@ export function SettingsPage({ settings, onSettings, onLocked, toast }: { settin
   const [restoreOpen, setRestoreOpen] = useState(false);
   const [version, setVersion] = useState<Awaited<ReturnType<typeof api.updateStatus>> | null>(null);
   const [neptune, setNeptune] = useState<NeptuneAvailability | null>(null);
-  const [neptuneOpen, setNeptuneOpen] = useState(false);
-  const [neptuneCode, setNeptuneCode] = useState("");
-  const [logs, setLogs] = useState<AuditEvent[]>([]);
   const [busy, setBusy] = useState("");
   const [dragging, setDragging] = useState<string | null>(null);
   const [dropTarget, setDropTarget] = useState<DropTarget>(null);
 
   const loadKernel = useCallback(() => api.kernelAccess().then((value) => { setKernel(value); setKernelUrl(value.url); }).catch((error) => toast(errorMessage(error), "error")), [toast]);
-  const loadLogs = useCallback(() => { if (!document.hidden) api.audit().then((value) => setLogs(value.events.slice(0, 80))).catch(() => undefined); }, []);
   useEffect(() => {
     void loadKernel();
     api.updateStatus().then(setVersion).catch(() => setVersion(null));
@@ -86,51 +79,37 @@ export function SettingsPage({ settings, onSettings, onLocked, toast }: { settin
       .then((value) => { setTrashSettings(value); setTrashRetentionInput(String(value.retention_days)); })
       .catch((error) => toast(errorMessage(error), "error"));
   }, [loadKernel, toast]);
-  useEffect(() => { loadLogs(); const timer = window.setInterval(loadLogs, 5000); document.addEventListener("visibilitychange", loadLogs); return () => { window.clearInterval(timer); document.removeEventListener("visibilitychange", loadLogs); }; }, [loadLogs]);
   useEffect(() => setAccent(settings.accent), [settings.accent]);
   useEffect(() => () => applyAccent(settings.accent), [settings.accent]);
 
   useEffect(() => {
-    const job = pendingAgentJob();
-    if (!job) return;
-    let stopped = false;
-    setBusy("neptune-initialize");
-    void (async () => {
-      if (job) {
-        await waitForAgentJob(job, api.neptuneInitialization);
-        const availability = await api.neptuneAvailability();
-        if (!availability.linked || availability.project?.mirror?.root !== "volt" || availability.project.mirror.mode !== "single-file") throw new Error("Neptune did not report both Volt backup pipelines");
-        if (!stopped) { setNeptune(availability); toast("Both Neptune pipelines are linked."); }
-      }
-    })().catch(error => { if (!stopped) toast(errorMessage(error), "error"); }).finally(() => { if (!stopped) setBusy(""); });
-    return () => { stopped = true; };
-  }, [toast]);
+    const poll = () => api.neptuneAvailability().then(setNeptune).catch(() => setNeptune(previous => ({ installed: null, linked: null, ...previous, state: "unavailable" })));
+    const timer = setInterval(() => void poll(), 15000); return () => clearInterval(timer);
+  }, []);
 
   function closeAccess() { setAccessOpen(false); setCurrentKey(""); setNewKey(""); setConfirmKey(""); }
   function closeKernel() { setKernelOpen(false); setKernelToken(""); setKernelTokenConfirm(""); }
   function closeRestore() { setRestoreOpen(false); setInspection(null); setRestoreFile(null); setRestorePhrase(""); setRestoreKey(""); }
-  function closeNeptune() { setNeptuneOpen(false); setNeptuneCode(""); }
-
-  async function initializeNeptune(event: React.FormEvent) {
-    event.preventDefault();
-    if (!/^[A-Za-z0-9_-]{32}$/.test(neptuneCode)) return toast("Enter the 32-character setup code from Saturn", "error");
-    setBusy("neptune-initialize");
-    try {
-      const accepted = await api.initializeNeptune(neptuneCode);
-      setNeptuneCode("");
-      const job = await waitForNeptuneInitialization(accepted);
-      if (job.state === "FAILED") throw new Error(job.message || "Neptune initialization failed");
-      const availability = await api.neptuneAvailability();
-      const mirror = availability.project?.mirror;
-      if (!availability.linked || mirror?.root !== "volt" || mirror.mode !== "single-file") {
-        throw new Error("Neptune did not report both Volt backup pipelines after initialization");
-      }
-      setNeptune(availability);
-      closeNeptune();
-      toast("Recovery ZIP and personal.volt mirror are linked to Saturn.");
-    } catch (error) { toast(errorMessage(error), "error"); }
-    finally { setBusy(""); }
-  }
+  const initializeNeptune = () => openAgentInitialization({
+    component: "Neptune", service: "volt",
+    description: "Connect this service to the local Neptune agent. An existing agent is reused.",
+    profile: "Required pipelines: recovery ZIP and personal.volt mirror. Each keeps its own schedule.",
+    codeLabel: "Dual-pipeline setup code",
+    initialize: input => api.initializeNeptune(input.enrollment_code || "", input.request_id),
+    observe: id => api.neptuneInitialization(id || ""),
+    recover: async hint => {
+      if (hint?.id) return api.neptuneInitialization(hint.id);
+      const result = await request<{ jobs: (InitializationJob & { service?: string })[] }>("/api/v1/update-flow/jobs");
+      return result.jobs.find(job => job.service === "neptune-initialization" &&
+        (hint?.request_id ? job.request_id === hint.request_id : !["COMPLETED", "FAILED"].includes(job.state)));
+    },
+    verify: async () => {
+      const availability = await api.neptuneAvailability(); setNeptune(availability);
+      return { ready: availability.state === "linked" && availability.linked === true &&
+        availability.project?.mirror?.root === "volt" && availability.project.mirror.mode === "single-file",
+        message: "Both the recovery ZIP and single-file mirror must be enrolled and reachable." };
+    },
+  });
 
   async function saveInterface(update: Partial<InterfaceSettings>, success = "Setting saved") {
     const optimistic = { ...settings, ...update };
@@ -256,8 +235,6 @@ export function SettingsPage({ settings, onSettings, onLocked, toast }: { settin
     await saveInterface({ settings_order: next }, `Settings order saved: position ${next.indexOf(dragging) + 1}`);
   }
 
-  const voltMirrorConfigured = neptune?.project?.mirror?.root === "volt" && neptune.project.mirror.mode === "single-file";
-  const neptuneNeedsInitialization = (!neptune?.linked || !voltMirrorConfigured);
 
   const sections: Record<SectionId, { title: string; eyebrow: string; description?: string; content: React.ReactNode }> = {
     appearance: { title: "Appearance", eyebrow: "APPEARANCE", description: "Accent color, sidebar position, and vault ordering.", content: <>
@@ -273,10 +250,16 @@ export function SettingsPage({ settings, onSettings, onLocked, toast }: { settin
     backup: { title: "Backup", eyebrow: "BACKUP", description: "Portable container, ZIP snapshot, and Neptune.", content: <div className="backup-content">
       <SettingGroup title="System snapshot" description="The logical snapshot contains entries, revisions, and settings, but not server device keys."><div className="button-row"><button className="button secondary reference-action" disabled={!!busy} onClick={() => getFile("backup")}><Icon name="download" />Create and download snapshot</button><button className="button secondary portable-vault-action" disabled={!!busy} onClick={() => getFile("vault")}><Icon name="download" />Download personal.volt</button></div></SettingGroup>
       <SettingGroup title="Restore snapshot" description="The selected archive is verified first; replacement proceeds only after explicit confirmation."><button className="button secondary reference-action" disabled={!!busy} onClick={() => setRestoreOpen(true)}>Browse local snapshot archive</button></SettingGroup>
-      <SettingGroup className="backup-neptune-group" title="Automatic backup to Saturn"><button type="button" className="button secondary reference-action" onClick={() => openVoltUpdates("neptune")}>Check Neptune for updates</button><p>Schedules, remote runs and Neptune fleet state are managed only from Saturn → Synchronization. Manual Volt ZIP and personal.volt downloads remain here.</p><StatusRow label="Local Neptune agent:" text={neptune?.linked ? "Linked to Saturn" : neptune?.installed ? "Detected · not linked" : "Not installed"} ok={neptune?.linked === true} />{neptune?.linked && <><StatusRow label="Recovery ZIP:" text={neptune.project ? `Configured · schedule ${neptune.project.enabled ? "enabled" : "disabled"}` : "Configuration unavailable"} ok={Boolean(neptune.project)} /><StatusRow label="personal.volt mirror:" text={voltMirrorConfigured ? `Configured · schedule ${neptune.project!.mirror!.enabled ? "enabled" : "disabled"}` : "Not configured"} ok={voltMirrorConfigured} /></>}{neptuneNeedsInitialization && <button className="button secondary reference-action" disabled={!!busy || !version?.updater.reachable} onClick={() => setNeptuneOpen(true)}>{neptune?.linked ? "Repair Neptune pipelines" : "Initialize Neptune"}</button>}</SettingGroup>
+      <SettingGroup className="backup-neptune-group" title="Automatic backup to Saturn" description="Neptune exports the standard ZIP and delivers the dedicated vault mirror independently.">
+        <StatusRow label="Local Neptune agent:" text={!neptune ? "Checking" : neptune.state === "linked" ? "Linked" : neptune.state === "unlinked" ? "Not linked" : neptune.state === "authorization_failed" ? "Authorization failed" : neptune.linked ? "Unavailable · last known linked" : "Unavailable · installation unknown"} ok={neptune?.state === "linked"} />
+        <button className="button secondary reference-action" onClick={initializeNeptune}>Initialize</button>
+        <BackupPolicyPanel service="volt" base="/api/v1/neptune/policy" />
+        </SettingGroup>
+      <SettingGroup title="Neptune version"><p>Current installed version: {neptune?.version ?? "Unavailable"}</p><button className="button secondary reference-action" onClick={() => openVoltUpdates("neptune")}>Check Neptune for updates</button>
+      </SettingGroup>
     </div> },
     updates: { title: "Updates", eyebrow: "UPDATES", description: "Local Updater and trusted release registry.", content: <div className="updates-content"><SettingGroup className="update-pipeline-group" title="Update pipeline" description="Release discovery comes from Kernel Register; replacement and rollback are performed by the local Updater."><p className="installed-version">Current installed version: <strong>v{version?.installed_version ?? "…"}</strong></p><StatusRow label="Local Updater agent:" text={version?.updater.reachable ? "Service Reachability" : version?.updater.error ?? "Service Unavailable"} ok={version?.updater.reachable} /><StatusRow label="Kernel Register:" text={kernel?.reachable ? "Service Reachability" : kernel?.error ?? "Service Unavailable"} ok={kernel?.reachable} /><button className="button secondary reference-action update-action" disabled={!!busy} onClick={() => openVoltUpdates()}>Check for updates</button></SettingGroup><SettingGroup className="updater-version-group" title="Updater version"><p>Current installed version: {version?.updater.version ?? "unavailable"}</p><button className="button secondary reference-action" disabled={!!busy || !version?.updater.reachable} onClick={() => openVoltUpdates("updater")}>Check Updater for updates</button></SettingGroup></div> },
-    logs: { title: "Logs", eyebrow: "LOGS", description: "A limited operational audit stream without secret contents.", content: <><div className="log-command-band"><p>Compact activity stream without secret values.</p><button className="button secondary" disabled={!!busy} onClick={() => getFile("logs")}><Icon name="download" />Download log archive</button></div><div className="settings-log-table"><header><span>TYPE</span><span>BODY</span><span>TIME</span></header>{logs.map((event) => <div key={event.event_id}><strong className={event.status === "success" ? "ok-text" : "danger-text"}>{event.status === "success" ? "/INFO" : "/ERROR"}</strong><span>{event.action}{event.target ? ` · ${event.target}` : ""}</span><time>{new Intl.DateTimeFormat("en-US", { timeStyle: "medium" }).format(new Date(event.created_at))}</time></div>)}</div></> },
+    logs: { title: "Logs", eyebrow: "LOGS", description: "Operational events without secret contents.", content: <ServiceLogsPanel base="/api/v1/audit" download="/api/v1/logs/archive" /> },
     cryptography: { title: "Cryptography", eyebrow: "CRYPTOGRAPHY", description: "Protection model for the local container.", content: <div className="crypto-grid"><div><strong>AES-256-GCM</strong><span>Individual data key for every entry</span></div><div><strong>Argon2id</strong><span>The Access Key unlocks the portable master key</span></div><div><strong>Dual wrapping</strong><span>Offline Access Key and server device key</span></div></div> },
   };
 
@@ -295,6 +278,6 @@ export function SettingsPage({ settings, onSettings, onLocked, toast }: { settin
 
     {restoreOpen && <Modal title="Restore Volt" eyebrow="REPLACE RESTORE" className="narrow" dirty={Boolean(restoreFile)} onClose={closeRestore} footer={<><button className="button ghost" onClick={closeRestore}>Cancel</button><button className="button danger-button" disabled={busy === "restore" || !inspection || restorePhrase !== "RESTORE"} onClick={restore}>{busy === "restore" ? "Restoring…" : "Replace state"}</button></>}><div className="modal-body restore-body"><p>Select a trusted ZIP snapshot. After verification, all local entries, revisions, settings, and audit events will be replaced, and operator sessions will be closed. A completed restore cannot be undone; the previous state can only be recovered from a separate backup created beforehand.</p><label className="button secondary file-button align-start">Select ZIP<input data-autofocus type="file" accept=".zip,application/zip" onChange={(event) => inspect(event.target.files?.[0] ?? null)} /></label>{inspection && <><dl><div><dt>File</dt><dd>{inspection.filename}</dd></div><div><dt>Size</dt><dd>{inspection.bytes.toLocaleString("en-US")} bytes</dd></div><div><dt>Created</dt><dd>{formatDate(inspection.manifest.created_at)}</dd></div><div><dt>Version</dt><dd>{inspection.manifest.source_version}</dd></div><div><dt>Entries</dt><dd>{inspection.manifest.files["data/entries.jsonl"]?.records ?? 0}</dd></div></dl><label className="control-label">Archive Access Key (required when recovering into a new vault)<input type="password" autoComplete="off" value={restoreKey} onChange={(event) => setRestoreKey(event.target.value)} /></label><label className="control-label">Enter RESTORE<input value={restorePhrase} onChange={(event) => setRestorePhrase(event.target.value)} /></label></>}</div></Modal>}
 
-    {neptuneOpen && <Modal title="Initialize Neptune" eyebrow="BACKUP" className="narrow" dirty={Boolean(neptuneCode)} onClose={closeNeptune} footer={<><button className="button ghost" type="button" disabled={busy === "neptune-initialize"} onClick={closeNeptune}>Cancel</button><button className="button" form="neptune-form" disabled={busy === "neptune-initialize"}>{busy === "neptune-initialize" ? "Linking both pipelines…" : "Initialize"}</button></>}><form id="neptune-form" className="modal-body form-grid" onSubmit={initializeNeptune}><p className="inline-note">In Saturn → Synchronization choose <strong>Volt ZIP + personal.volt mirror</strong>, create its one-time setup code and paste it here. Archive-only and other service codes are rejected. Volt may briefly reconnect while Updater configures both pipelines.</p><label className="control-label">Volt dual-pipeline setup code<input data-autofocus value={neptuneCode} onChange={(event) => setNeptuneCode(event.target.value.trim())} minLength={32} maxLength={32} autoComplete="off" required /></label></form></Modal>}
+
   </>;
 }

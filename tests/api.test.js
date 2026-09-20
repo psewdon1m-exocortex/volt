@@ -145,6 +145,8 @@ test("Neptune exports the exact manual archive format and keeps controls behind 
   const neptuneClient = {
     status: async () => ({ version: "0.1.0", client_instance_id: "client-test", project: { enabled: false, interval_hours: 24 } }),
     schedule: async (enabled, intervalHours) => { scheduled = { enabled, intervalHours }; },
+    policy: async () => ({ schema: "exocortex.backup.policy.v1", revision: 4, appliedRevision: 4, paused: false,
+      archive: { enabled: true, intervalHours: 6 }, mirror: { enabled: true, intervalMinutes: 5 } }),
     run: async () => ({}),
   };
   const app = createApp({ store, sessionKey: deriveSessionKey(masterKey), accessKey: "correct horse battery staple", neptuneClient, neptuneExportTokenFile: tokenFile });
@@ -162,7 +164,14 @@ test("Neptune exports the exact manual archive format and keeps controls behind 
   const exported = await fetch(`${base}/api/v1/internal/neptune/backup`, { method: "POST", headers: { authorization: "Bearer export-secret" } });
   assert.equal(exported.status, 200);
   assert.equal(exported.headers.get("content-type"), "application/zip");
-  assert.ok((await exported.arrayBuffer()).byteLength > 0);
+  const archive = parseBackupArchive(Buffer.from(await exported.arrayBuffer()));
+  assert.equal(archive.state.backup_policy.archive.intervalHours, 6);
+  assert.equal(archive.state.backup_policy.mirror.intervalMinutes, 5);
+  for (const kind of ["backup", "mirror"]) {
+    assert.equal((await fetch(`${base}/api/v1/internal/neptune/${kind}`, { method: "HEAD" })).status, 401);
+    const ready = await fetch(`${base}/api/v1/internal/neptune/${kind}`, { method: "HEAD", headers: { authorization: "Bearer export-secret" } });
+    assert.equal(ready.status, 204); assert.equal(ready.headers.get("x-neptune-ready"), "1");
+  }
   assert.equal((await fetch(`${base}/api/v1/internal/neptune/mirror`, { method: "POST" })).status, 401);
   const mirrored = await fetch(`${base}/api/v1/internal/neptune/mirror`, { method: "POST", headers: { authorization: "Bearer export-secret" } });
   assert.equal(mirrored.status, 200);
@@ -174,8 +183,8 @@ test("Neptune exports the exact manual archive format and keeps controls behind 
   const unlocked = await fetch(`${base}/api/v1/session`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ access_key: "correct horse battery staple" }) });
   const cookie = unlocked.headers.getSetCookie()[0].split(";")[0];
   const response = await fetch(`${base}/api/v1/neptune/schedule`, { method: "PUT", headers: { cookie, "content-type": "application/json" }, body: JSON.stringify({ enabled: true, interval_hours: 6 }) });
-  assert.equal(response.status, 204);
-  assert.deepEqual(scheduled, { enabled: true, intervalHours: 6 });
+  assert.equal(response.status, 426);
+  assert.equal(scheduled, null);
 });
 
 test("Volt initialization proxies and verifies the dual Neptune pipeline job", async (context) => {

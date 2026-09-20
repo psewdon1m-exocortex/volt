@@ -3,6 +3,7 @@ import { createHash } from "node:crypto";
 import { strToU8, unzipSync, zipSync } from "fflate";
 
 import { domainError } from "./store.js";
+import { validateBackupIntent } from "./backup-policy.js";
 
 const FORMAT = "exocortex-volt-logical-backup";
 const SCHEMA_VERSION = 3;
@@ -55,6 +56,7 @@ export function buildBackupArchive(state, version = "0.1.5", portableSnapshot = 
     scope: portableSnapshot ? "complete" : "same-vault",
     restore_mode: "replace",
     encryption: { scheme: "AES-256-GCM envelope encryption", external_key_required: true },
+    backup_policy: validateBackupIntent(state.backup_policy),
     files,
   };
   members["manifest.json"] = strToU8(JSON.stringify(manifest, null, 2));
@@ -128,6 +130,7 @@ export function parseBackupArchive(bytes) {
       throw domainError(400, "BACKUP_CHECKSUM_MISMATCH", "Integrity check failed for personal.volt");
     }
   }
+  state.backup_policy = validateBackupIntent(manifest.backup_policy);
   return { state, portableSnapshot, manifest, digest: sha256(bytes) };
 }
 

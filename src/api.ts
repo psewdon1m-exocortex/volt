@@ -40,9 +40,9 @@ export type NeptuneUpdate = {
 };
 
 export type NeptuneAvailability = Partial<NeptuneStatus> & {
-  installed: boolean;
-  linked: boolean;
-  state: "linked" | "unlinked" | "unavailable";
+  installed: boolean | null;
+  linked: boolean | null;
+  state: "linked" | "unlinked" | "unavailable" | "authorization_failed";
   version?: string | null;
 };
 
@@ -113,7 +113,7 @@ export type TrashSettings = {
   purged_entries?: number;
 };
 
-async function request<T>(url: string, init?: RequestInit): Promise<T> {
+export async function request<T>(url: string, init?: RequestInit): Promise<T> {
   const response = await fetch(url, {
     ...init,
     credentials: "same-origin",
@@ -194,7 +194,7 @@ export const api = {
   },
   neptuneStatus: () => request<NeptuneStatus>("/api/v1/neptune/status"),
   neptuneAvailability: () => request<NeptuneAvailability>("/api/v1/neptune/availability"),
-  initializeNeptune: (enrollmentCode: string) => request<NeptuneInitializationJob>("/api/v1/neptune/initialize", { method: "POST", body: JSON.stringify({ enrollment_code: enrollmentCode }) }),
+  initializeNeptune: (enrollmentCode: string, requestId?: string) => request<NeptuneInitializationJob>("/api/v1/neptune/initialize", { method: "POST", body: JSON.stringify({ enrollment_code: enrollmentCode, request_id: requestId }) }),
   neptuneInitialization: (jobId: string) => request<NeptuneInitializationJob>(`/api/v1/neptune/initializations/${encodeURIComponent(jobId)}`),
   neptuneSchedule: (enabled: boolean, intervalHours: number) => request<void>("/api/v1/neptune/schedule", { method: "PUT", body: JSON.stringify({ enabled, interval_hours: intervalHours }) }),
   neptuneRun: () => request<void>("/api/v1/neptune/runs", { method: "POST", body: "{}" }),

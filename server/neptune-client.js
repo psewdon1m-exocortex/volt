@@ -23,12 +23,13 @@ function request(socketPath, projectId, token, method, route, body, timeout = 30
         if (length > 1024 * 1024) response.destroy(new Error("Neptune response exceeds 1 MB"));
         else chunks.push(chunk);
       });
+      response.on("error", reject);
       response.on("end", () => {
         let result = {};
         try { result = JSON.parse(Buffer.concat(chunks).toString("utf8") || "{}"); }
         catch { reject(Object.assign(new Error("Neptune returned invalid JSON"), { status: 502 })); return; }
         if ((response.statusCode ?? 500) < 200 || (response.statusCode ?? 500) >= 300) {
-          reject(Object.assign(new Error(result.error || `Neptune returned HTTP ${response.statusCode}`), { status: response.statusCode === 409 ? 409 : 502 }));
+          reject(Object.assign(new Error(result.error || `Neptune returned HTTP ${response.statusCode}`), { status: [400, 404, 409, 410, 413, 422, 426, 503].includes(response.statusCode) ? response.statusCode : 502, upstreamStatus: response.statusCode }));
           return;
         }
         resolve(result);
@@ -50,13 +51,29 @@ export function createNeptuneClient({ socketPath, projectId, controlTokenFile })
     try { return fs.readFileSync(controlTokenFile, "utf8").trim(); }
     catch { throw Object.assign(new Error("Neptune control token is unavailable"), { status: 503 }); }
   }
+  let lastKnown = null;
   return {
     async availability() {
       try {
         const health = await request(socketPath, "", "", "GET", "/v1/health", null, 3_000);
-        try { return { installed: true, linked: true, state: "linked", ...(await this.status()) }; }
-        catch { return { installed: true, linked: false, state: "unlinked", version: health.version ?? null }; }
-      } catch { return { installed: false, linked: false, state: "unavailable", version: null }; }
+        try {
+          lastKnown = { installed: true, linked: true, state: "linked", ...(await this.status()),
+            policy_protocol: health.policy_protocol ?? 0, last_verified_at: new Date().toISOString() };
+          return lastKnown;
+        } catch (error) {
+          return { ...lastKnown, installed: true, linked: error.upstreamStatus === 404 ? false : lastKnown?.linked ?? null,
+            state: error.upstreamStatus === 404 ? "unlinked" : [401,403].includes(error.upstreamStatus) ? "authorization_failed" : "unavailable",
+            version: health.version ?? lastKnown?.version ?? null, error: "Scoped Neptune status could not be verified" };
+        }
+      } catch {
+        return { ...lastKnown, installed: lastKnown?.installed ?? null, linked: lastKnown?.linked ?? null,
+          state: "unavailable", version: lastKnown?.version ?? null, error: "Neptune is unreachable; installation state is not confirmed" };
+      }
+    },
+    policy: (method = "GET", body, suffix = "") => {
+      if (!["", "/runs"].includes(suffix) || !["GET", "PUT", "POST"].includes(method))
+        throw Object.assign(new Error("Invalid backup policy operation"), { status: 400 });
+      return request(socketPath, projectId, token(), method, "/policy" + suffix, body);
     },
     status: () => request(socketPath, projectId, token(), "GET", "/status"),
     schedule: (enabled, intervalHours) => request(socketPath, projectId, token(), "PUT", "/schedule", { enabled, intervalHours }),

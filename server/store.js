@@ -1,3 +1,4 @@
+import { restoredPolicyRecord } from "./backup-policy.js";
 import { createHash, randomUUID } from "node:crypto";
 import { mkdirSync, readFileSync, statfsSync, unlinkSync, writeFileSync } from "node:fs";
 import { cpus, freemem, totalmem } from "node:os";
@@ -431,12 +432,15 @@ export class VoltStore {
     return event.event_id;
   }
 
-  listAudit(limit = 100) {
+  listAudit(limit = 100, beforeId = null) {
+    const cursor = beforeId == null ? Number.MAX_SAFE_INTEGER : Number(beforeId);
+    if (!Number.isSafeInteger(cursor) || cursor < 1) throw domainError(400, "INVALID_CURSOR", "Invalid audit cursor");
     const rows = this.db.prepare(`
-      SELECT event_id, actor, action, target, status, details_json, created_at
-      FROM audit_events ORDER BY id DESC LIMIT ?
-    `).all(Math.min(Math.max(Number(limit) || 100, 1), 500));
+      SELECT id, event_id, actor, action, target, status, details_json, created_at
+      FROM audit_events WHERE id < ? ORDER BY id DESC LIMIT ?
+    `).all(cursor, Math.min(Math.max(Number(limit) || 100, 1), 500));
     return rows.map((row) => ({
+      sequence: Number(row.id),
       event_id: row.event_id,
       actor: row.actor,
       action: row.action,
@@ -830,7 +834,7 @@ export class VoltStore {
     const tables = {
       settings: this.db.prepare(`
         SELECT key, value FROM settings
-        WHERE key NOT IN ('access_key_hash', 'auth_generation', 'kernel_token_hash')
+        WHERE key NOT IN ('access_key_hash', 'auth_generation', 'kernel_token_hash', 'backup_policy_restore')
         ORDER BY key
       `).all(),
       entries: this.db.prepare(`
@@ -869,6 +873,7 @@ export class VoltStore {
   }
 
   importLogicalState(state, { actor = "operator", archiveDigest = null } = {}) {
+    const policy = restoredPolicyRecord(state.backup_policy);
     const preservedAccessKeyHash = this.getSetting("access_key_hash");
     const preservedKernelTokenHash = this.getSetting("kernel_token_hash");
     const nextAuthGeneration = this.getAuthGeneration() + 1;
@@ -907,11 +912,12 @@ export class VoltStore {
       `);
       const settings = this.db.prepare("INSERT INTO settings(key, value) VALUES(?, ?)");
       for (const row of state.settings) {
-        if (row.key !== "access_key_hash" && row.key !== "auth_generation" && row.key !== "kernel_token_hash") settings.run(row.key, row.value);
+        if (!["access_key_hash", "auth_generation", "kernel_token_hash", "backup_policy_restore"].includes(row.key)) settings.run(row.key, row.value);
       }
       if (preservedAccessKeyHash) settings.run("access_key_hash", preservedAccessKeyHash);
       if (preservedKernelTokenHash) settings.run("kernel_token_hash", preservedKernelTokenHash);
       settings.run("auth_generation", String(nextAuthGeneration));
+      settings.run("backup_policy_restore", JSON.stringify(policy));
       const entries = this.db.prepare(`
         INSERT INTO entries(id, current_revision_id, position, activity_score, last_interacted_at, wrapped_key, key_nonce, key_tag, created_at, updated_at, deleted_at)
         VALUES(?, NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?)
