@@ -53,9 +53,13 @@ export function SettingsPage({ settings, onSettings, onLocked, toast }: { settin
   const [confirmKey, setConfirmKey] = useState("");
   const [kernelOpen, setKernelOpen] = useState(false);
   const [kernel, setKernel] = useState<KernelStatus | null>(null);
+  const [kernelService, setKernelService] = useState<KernelStatus | null>(null);
   const [kernelUrl, setKernelUrl] = useState("");
   const [kernelToken, setKernelToken] = useState("");
   const [kernelTokenConfirm, setKernelTokenConfirm] = useState("");
+  const [kernelServiceOpen, setKernelServiceOpen] = useState(false);
+  const [kernelServiceToken, setKernelServiceToken] = useState("");
+  const [kernelServiceConfirm, setKernelServiceConfirm] = useState("");
   const [trashSettings, setTrashSettings] = useState<TrashSettings | null>(null);
   const [trashRetentionInput, setTrashRetentionInput] = useState("30");
   const [trashConfirmOpen, setTrashConfirmOpen] = useState(false);
@@ -71,14 +75,16 @@ export function SettingsPage({ settings, onSettings, onLocked, toast }: { settin
   const [dropTarget, setDropTarget] = useState<DropTarget>(null);
 
   const loadKernel = useCallback(() => api.kernelAccess().then((value) => { setKernel(value); setKernelUrl(value.url); }).catch((error) => toast(errorMessage(error), "error")), [toast]);
+  const loadKernelService = useCallback(() => api.kernelServiceAccess().then(setKernelService).catch((error) => toast(errorMessage(error), "error")), [toast]);
   useEffect(() => {
     void loadKernel();
+    void loadKernelService();
     api.updateStatus().then(setVersion).catch(() => setVersion(null));
     api.neptuneAvailability().then(setNeptune).catch(() => setNeptune(null));
     api.trashSettings()
       .then((value) => { setTrashSettings(value); setTrashRetentionInput(String(value.retention_days)); })
       .catch((error) => toast(errorMessage(error), "error"));
-  }, [loadKernel, toast]);
+  }, [loadKernel, loadKernelService, toast]);
   useEffect(() => setAccent(settings.accent), [settings.accent]);
   useEffect(() => () => applyAccent(settings.accent), [settings.accent]);
 
@@ -89,6 +95,7 @@ export function SettingsPage({ settings, onSettings, onLocked, toast }: { settin
 
   function closeAccess() { setAccessOpen(false); setCurrentKey(""); setNewKey(""); setConfirmKey(""); }
   function closeKernel() { setKernelOpen(false); setKernelToken(""); setKernelTokenConfirm(""); }
+  function closeKernelService() { setKernelServiceOpen(false); setKernelServiceToken(""); setKernelServiceConfirm(""); }
   function closeRestore() { setRestoreOpen(false); setInspection(null); setRestoreFile(null); setRestorePhrase(""); setRestoreKey(""); }
   const initializeNeptune = () => openAgentInitialization({
     component: "Neptune", service: "volt",
@@ -151,10 +158,26 @@ export function SettingsPage({ settings, onSettings, onLocked, toast }: { settin
     finally { setBusy(""); }
   }
 
+  async function saveKernelService(event: React.FormEvent) {
+    event.preventDefault();
+    if (kernelServiceToken !== kernelServiceConfirm) return toast("Kernel service token entries do not match", "error");
+    setBusy("kernel-service");
+    try {
+      const saved = await api.setKernelServiceAccess(kernelServiceToken, kernelUrl);
+      setKernelService(saved);
+      setKernelUrl(saved.url);
+      void loadKernel();
+      closeKernelService();
+      toast("Kernel Register token validated and saved");
+    } catch (error) { toast(errorMessage(error), "error"); }
+    finally { setBusy(""); }
+  }
+
   async function commitKernelUrl() {
     if (!kernel || kernelUrl === kernel.url) return;
+    if (!kernelService?.configured) return toast("Set KERNEL_SERVICE_TOKEN to validate the new Kernel URL", "error");
     setBusy("kernel-url");
-    try { const saved = await api.setKernelAccess({ url: kernelUrl }); setKernel(saved); setKernelUrl(saved.url); toast("Kernel URL verified and saved"); }
+    try { const saved = await api.setKernelAccess({ url: kernelUrl }); setKernel(saved); setKernelUrl(saved.url); void loadKernelService(); toast("Kernel URL verified and saved"); }
     catch (error) { setKernelUrl(kernel.url); toast(errorMessage(error), "error"); }
     finally { setBusy(""); }
   }
@@ -242,10 +265,11 @@ export function SettingsPage({ settings, onSettings, onLocked, toast }: { settin
       <SettingGroup className="appearance-sidebar" title="Left menu position" description="Reveal the sidebar at the screen edge or keep it permanently open."><label className="sidebar-mode-control"><input type="checkbox" checked={settings.sidebar_mode === "auto"} onChange={(event) => saveInterface({ sidebar_mode: event.target.checked ? "auto" : "fixed" })} /><span>Automatically show and hide the panel on hover</span></label></SettingGroup>
       <SettingGroup className="appearance-ranking" title="Vault ordering" description="Frequently used entries rise above less active entries. Manual dragging establishes a new baseline."><label className="sidebar-mode-control"><input type="checkbox" checked={settings.activity_ranking_enabled} onChange={(event) => saveInterface({ activity_ranking_enabled: event.target.checked }, event.target.checked ? "Activity ranking enabled" : "Manual vault order enabled")} /><span>Prioritize entries by interaction activity</span></label></SettingGroup>
     </> },
-    security: { title: "Security", eyebrow: "SECURITY", description: "Access Key, data retention, and trusted Kernel connection.", content: <>
-      <SettingGroup className="access-key-group" title="Change Access Key" description="Changing the operator key closes all other active browser sessions."><button className="button secondary reference-action" onClick={() => { setCurrentKey(""); setNewKey(""); setConfirmKey(""); setAccessOpen(true); }}>Change Access Key</button></SettingGroup>
+    security: { title: "Security", eyebrow: "SECURITY", description: "Access Key, trash retention, and two distinct Kernel service credentials.", content: <>
+      <SettingGroup className="access-key-group" title="Changing Access Key" description="Changing the Access Key closes every other active browser session."><button className="button secondary reference-action" onClick={() => { setCurrentKey(""); setNewKey(""); setConfirmKey(""); setAccessOpen(true); }}>Change Access Key</button></SettingGroup>
       <SettingGroup className="trash-retention-group" title="Trash retention" description="Applies to entities already in trash. Shortening the period may permanently delete older entities immediately."><form className="trash-retention-control" onSubmit={saveTrashRetention}><label className="control-label compact">Retention, days<input type="number" inputMode="numeric" required min={trashSettings?.min_days ?? 1} max={trashSettings?.max_days ?? 365} step={1} value={trashRetentionInput} disabled={!trashSettings || busy === "trash-retention"} onChange={(event) => setTrashRetentionInput(event.target.value)} /></label><button className="button secondary" disabled={!trashSettings || busy === "trash-retention" || trashRetentionInput === String(trashSettings.retention_days)}>{busy === "trash-retention" ? "Saving…" : "Save"}</button></form></SettingGroup>
-      <SettingGroup className="kernel-group" title="Kernel connection"><div className="kernel-connection-row"><label className="visually-hidden" htmlFor="kernel-url">Kernel URL</label><input id="kernel-url" className="kernel-url" type="url" value={kernelUrl} disabled={busy === "kernel-url"} onChange={(event) => setKernelUrl(event.target.value)} onBlur={() => void commitKernelUrl()} onKeyDown={(event) => { if (event.key === "Enter") { event.preventDefault(); void commitKernelUrl(); } }} /><div className="kernel-reachability"><span>Kernel Core: {kernel?.identity ?? "—"}</span><strong className={kernel == null ? "" : kernel.reachable ? "ok-text" : "danger-text"}>{kernel == null ? "Checking Service" : kernel.reachable ? "Service Reachability" : kernel.error ?? "Service Unavailable"}<span className={`status-square${kernel == null ? " checking" : kernel.reachable ? "" : " offline"}`} /></strong></div></div><button className="button secondary wide-kernel-action" onClick={() => { setKernelToken(""); setKernelTokenConfirm(""); setKernelOpen(true); }}>Change protected Kernel access token{kernel?.configured ? "" : " — not configured"}</button></SettingGroup>
+      <SettingGroup className="kernel-group" title="Connection with Kernel"><div className="kernel-connection-row"><label className="visually-hidden" htmlFor="kernel-url">Kernel URL</label><input id="kernel-url" className="kernel-url" type="url" value={kernelUrl} disabled={busy === "kernel-url"} onChange={(event) => setKernelUrl(event.target.value)} onBlur={() => void commitKernelUrl()} onKeyDown={(event) => { if (event.key === "Enter") { event.preventDefault(); void commitKernelUrl(); } }} /><div className="kernel-reachability"><span>Kernel Register</span><strong className={kernelService == null ? "" : kernelService.reachable ? "ok-text" : "danger-text"}>{kernelService == null ? "Checking Service" : kernelService.reachable ? "Service Reachability" : kernelService.error ?? "Service Unavailable"}<span className={`status-square${kernelService == null ? " checking" : kernelService.reachable ? "" : " offline"}`} /></strong></div></div><button className="button secondary wide-kernel-action" onClick={() => { setKernelServiceToken(""); setKernelServiceConfirm(""); setKernelServiceOpen(true); }}>Change KERNEL_SERVICE_TOKEN · Volt → Kernel</button></SettingGroup>
+      <SettingGroup className="volt-kernel-group" title="Volt - Kernel secure channel"><div className="kernel-connection-row"><div className="kernel-url channel-endpoint">Volt internal resolver</div><div className="kernel-reachability"><span>Kernel → Volt</span><strong className={kernel?.configured ? "ok-text" : "danger-text"}>{kernel?.configured ? "Token configured" : "Token not configured"}<span className={`status-square${kernel?.configured ? "" : " offline"}`} /></strong></div></div><button className="button secondary wide-kernel-action" onClick={() => { setKernelToken(""); setKernelTokenConfirm(""); setKernelOpen(true); }}>Change VOLT_KERNEL_TOKEN · Kernel → Volt</button></SettingGroup>
     </> },
     backup: { title: "Backup", eyebrow: "BACKUP", description: "Portable container, ZIP snapshot, and Neptune.", content: <div className="backup-content">
       <SettingGroup title="System snapshot" description="The logical snapshot contains entries, revisions, and settings, but not server device keys."><div className="button-row"><button className="button secondary reference-action" disabled={!!busy} onClick={() => getFile("backup")}><Icon name="download" />Create and download snapshot</button><button className="button secondary portable-vault-action" disabled={!!busy} onClick={() => getFile("vault")}><Icon name="download" />Download personal.volt</button></div></SettingGroup>
@@ -270,9 +294,11 @@ export function SettingsPage({ settings, onSettings, onLocked, toast }: { settin
       return <SettingCard key={id} id={id} index={index} title={section.title} description={section.description} dragging={dragging} dropTarget={dropTarget} onMove={(direction) => reorder(index, direction)} onDragStart={() => setDragging(id)} onDragEnd={() => { setDragging(null); setDropTarget(null); }} onDragPosition={(before) => setDropTarget({ id, before })} onDrop={() => dropSection(id, dropTarget?.id === id ? dropTarget.before : true)}>{section.content}</SettingCard>;
     })}</div></div>
 
-    {accessOpen && <Modal title="Change Access Key" eyebrow="SECURITY" className="narrow" dirty={Boolean(currentKey || newKey || confirmKey)} onClose={closeAccess} footer={<><button className="button ghost" type="button" onClick={closeAccess}>Cancel</button><button className="button" form="access-form" disabled={busy === "access"}>{busy === "access" ? "Saving…" : "Change"}</button></>}><form id="access-form" className="modal-body form-grid" onSubmit={changeKey}><label className="control-label">Current Access Key<input data-autofocus type="password" required autoComplete="current-password" value={currentKey} onChange={(event) => setCurrentKey(event.target.value)} /></label><label className="control-label">New Access Key<input type="password" required autoComplete="new-password" value={newKey} onChange={(event) => setNewKey(event.target.value)} /></label><label className="control-label">Repeat new Access Key<input type="password" required autoComplete="new-password" value={confirmKey} onChange={(event) => setConfirmKey(event.target.value)} /></label></form></Modal>}
+    {accessOpen && <Modal title="Security" className="security-access-modal" dirty={Boolean(currentKey || newKey || confirmKey)} onClose={closeAccess}><form id="access-form" className="modal-body form-grid" onSubmit={changeKey}><label className="control-label">Current Access Key<input data-autofocus type="password" required autoComplete="current-password" value={currentKey} onChange={(event) => setCurrentKey(event.target.value)} /></label><label className="control-label">New Access Key<input type="password" required autoComplete="new-password" value={newKey} onChange={(event) => setNewKey(event.target.value)} /></label><label className="control-label">Repeat New Access Key<input type="password" required autoComplete="new-password" value={confirmKey} onChange={(event) => setConfirmKey(event.target.value)} /></label><p className="inline-note">Applying a new key revokes every other operator session.</p><button className="button" disabled={busy === "access"}>{busy === "access" ? "Changing…" : "Change Access Key"}</button></form></Modal>}
 
-    {kernelOpen && <Modal title="Replace Kernel token" eyebrow="KERNEL" className="narrow" dirty={Boolean(kernelToken || kernelTokenConfirm)} onClose={closeKernel} footer={<><button className="button ghost" type="button" onClick={closeKernel}>Cancel</button><button className="button" form="kernel-form" disabled={busy === "kernel"}>{busy === "kernel" ? "Saving…" : "Replace token"}</button></>}><form id="kernel-form" className="modal-body form-grid" onSubmit={saveKernel}><p className="inline-note">Enter the same write-only token configured in Kernel. Volt never reveals the current value.</p><label className="control-label">New VOLT_KERNEL_TOKEN<input data-autofocus type="password" required minLength={32} autoComplete="new-password" value={kernelToken} onChange={(event) => setKernelToken(event.target.value)} /></label><label className="control-label">Repeat token<input type="password" required minLength={32} autoComplete="new-password" value={kernelTokenConfirm} onChange={(event) => setKernelTokenConfirm(event.target.value)} /></label></form></Modal>}
+    {kernelOpen && <Modal title="Kernel → Volt token" eyebrow="SECURITY" className="narrow" dirty={Boolean(kernelToken || kernelTokenConfirm)} onClose={closeKernel} footer={<button className="button" form="kernel-form" disabled={busy === "kernel"}>{busy === "kernel" ? "Saving…" : "Replace token"}</button>}><form id="kernel-form" className="modal-body form-grid" onSubmit={saveKernel}><p className="inline-note">Set the same VOLT_KERNEL_TOKEN in Kernel Settings. The current value remains hidden.</p><label className="control-label">New VOLT_KERNEL_TOKEN<input data-autofocus type="password" required minLength={32} autoComplete="new-password" value={kernelToken} onChange={(event) => setKernelToken(event.target.value)} /></label><label className="control-label">Repeat token<input type="password" required minLength={32} autoComplete="new-password" value={kernelTokenConfirm} onChange={(event) => setKernelTokenConfirm(event.target.value)} /></label></form></Modal>}
+
+    {kernelServiceOpen && <Modal title="Volt → Kernel token" eyebrow="SECURITY" className="narrow" dirty={Boolean(kernelServiceToken || kernelServiceConfirm)} onClose={closeKernelService} footer={<button className="button" form="kernel-service-form" disabled={busy === "kernel-service"}>{busy === "kernel-service" ? "Validating…" : "Validate and replace"}</button>}><form id="kernel-service-form" className="modal-body form-grid" onSubmit={saveKernelService}><p className="inline-note">Enter the KERNEL_SERVICE_TOKEN accepted by Kernel Register. Volt verifies it before replacing the saved credential.</p><label className="control-label">New KERNEL_SERVICE_TOKEN<input data-autofocus type="password" required minLength={24} autoComplete="new-password" value={kernelServiceToken} onChange={(event) => setKernelServiceToken(event.target.value)} /></label><label className="control-label">Repeat token<input type="password" required minLength={24} autoComplete="new-password" value={kernelServiceConfirm} onChange={(event) => setKernelServiceConfirm(event.target.value)} /></label></form></Modal>}
 
     {trashConfirmOpen && trashSettings && <ConfirmDialog title="Shorten trash retention?" body={<p>Entities deleted more than {trashRetentionInput} {Number(trashRetentionInput) === 1 ? "day" : "days"} ago will be permanently erased immediately. This cannot be undone.</p>} confirmLabel="Save and delete expired" busy={busy === "trash-retention"} danger onClose={() => { if (busy !== "trash-retention") setTrashConfirmOpen(false); }} onConfirm={() => void commitTrashRetention(Number(trashRetentionInput))} />}
 

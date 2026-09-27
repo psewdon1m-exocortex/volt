@@ -45,6 +45,7 @@ test("Volt release discovery, updater install, job control and rollback restore 
   const releaseFetch = async (url, init) => {
     calls.push({ url: String(url), init });
     if (String(url).endsWith("/api/v1/register/resolve")) {
+      if (init.headers.Authorization === "Bearer rejected-kernel-service-token") return new Response("{}", { status: 401 });
       const key = JSON.parse(init.body).keys[0];
       return new Response(JSON.stringify({
         schema: "exocortex.register.resolution.v1",
@@ -103,6 +104,27 @@ test("Volt release discovery, updater install, job control and rollback restore 
     backup_required: true,
   });
   assert.equal(calls[0].init.headers.Authorization, "Bearer kernel-service-token");
+  const serviceAccess = await fetch(`${base}/api/v1/settings/kernel-service-access`, { headers: { cookie } });
+  assert.equal((await serviceAccess.json()).configured, true);
+  const rejected = await fetch(`${base}/api/v1/settings/kernel-service-access`, {
+    method: "PUT", headers: { cookie, "content-type": "application/json" },
+    body: JSON.stringify({ token: "rejected-kernel-service-token", url: "https://new-kernel.example.com" }),
+  });
+  assert.equal(rejected.status, 409);
+  assert.equal(store.getSetting("kernel_url"), "https://kernel.example.com");
+  const previousSealed = store.getSetting("kernel_service_token_sealed");
+  const replacement = "new-valid-kernel-service-token";
+  const rotatedService = await fetch(`${base}/api/v1/settings/kernel-service-access`, {
+    method: "PUT", headers: { cookie, "content-type": "application/json" },
+    body: JSON.stringify({ token: replacement, url: "https://new-kernel.example.com" }),
+  });
+  assert.equal(rotatedService.status, 200);
+  assert.equal(store.getSetting("kernel_url"), "https://new-kernel.example.com");
+  assert.notEqual(store.getSetting("kernel_service_token_sealed"), previousSealed);
+  assert.equal(store.getSetting("kernel_service_token_sealed").includes(replacement), false);
+  assert.equal(store.exportLogicalState().settings.some(({ key }) => key === "kernel_service_token_sealed"), false);
+  await fetch(`${base}/api/v1/update/check`, { method: "POST", headers: { cookie, "content-type": "application/json" }, body: "{}" });
+  assert.equal(calls.filter(({ url }) => url.endsWith("/api/v1/register/resolve")).at(-1).init.headers.Authorization, `Bearer ${replacement}`);
   assert.deepEqual(JSON.parse(calls[0].init.body), { keys: ["repositories.volt.url"] });
 
   assert.equal((await fetch(`${base}/api/v1/update/install`, {method:"POST",headers:{cookie,"content-type":"application/json"},body:JSON.stringify({version:"0.2.0"})})).status,426);

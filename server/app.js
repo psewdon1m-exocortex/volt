@@ -10,6 +10,7 @@ import { strToU8, zipSync } from "fflate";
 import multer from "multer";
 
 import { buildBackupArchive, MAX_COMPRESSED_BYTES, parseBackupArchive } from "./backup.js";
+import { openServiceToken, sealServiceToken } from "./crypto.js";
 import { generateValue } from "./generators.js";
 import { checkRegisteredRelease, resolveRepositoryUrl } from "./release-client.js";
 import { inspectWyvern, publishWyvern } from "./wyvern.js";
@@ -40,6 +41,13 @@ function bearerToken(request) {
 function validKernelToken(value) {
   return typeof value === "string"
     && value.length >= 32
+    && value.length <= 512
+    && !/(?:replace-with|change-this|example-token)/i.test(value);
+}
+
+function validKernelServiceToken(value) {
+  return typeof value === "string"
+    && value.length >= 24
     && value.length <= 512
     && !/(?:replace-with|change-this|example-token)/i.test(value);
 }
@@ -135,6 +143,13 @@ export function createApp({
     store.setSetting("kernel_token_hash", kernelTokenHash(kernelToken));
     store.audit({ actor: "system:migration", action: "kernel_access.configure" });
   }
+  if (!store.getSetting("kernel_service_token_sealed") && kernelServiceToken) {
+    store.setSetting("kernel_service_token_sealed", sealServiceToken(sessionKey, kernelServiceToken));
+  }
+  const currentKernelServiceToken = () => {
+    const sealed = store.getSetting("kernel_service_token_sealed");
+    return sealed ? openServiceToken(sessionKey, sealed) : "";
+  };
   const configuredKernelUrl = normalizeKernelUrl(kernelServiceUrl);
   const storedKernelUrl = store.getSetting("kernel_url");
   const legacyKernelUrls = new Set(["http://127.0.0.1:18180", "http://host.docker.internal:18180"]);
@@ -228,7 +243,7 @@ export function createApp({
 
   const checkRelease = (service, currentVersion) => checkRegisteredRelease({
     kernelUrl: store.getSetting("kernel_url") ?? kernelServiceUrl,
-    kernelServiceToken,
+    kernelServiceToken: currentKernelServiceToken(),
     service,
     currentVersion,
     fetchImpl: releaseFetch,
@@ -236,7 +251,7 @@ export function createApp({
   });
   const probeConfiguredKernel = (url = store.getSetting("kernel_url") ?? kernelServiceUrl) => probeKernel(
     url,
-    kernelServiceToken,
+    currentKernelServiceToken(),
     releaseFetch,
     updateCheckTimeoutMs,
   );
@@ -595,6 +610,25 @@ export function createApp({
       url,
       ...(await probeConfiguredKernel(url)),
     });
+  });
+  app.get("/api/v1/settings/kernel-service-access", async (_request, response) => {
+    const url = store.getSetting("kernel_url") ?? kernelServiceUrl;
+    response.json({ configured: Boolean(store.getSetting("kernel_service_token_sealed")), url, ...(await probeConfiguredKernel(url)) });
+  });
+  app.put("/api/v1/settings/kernel-service-access", requireSameOrigin, (request, response, next) => {
+    Promise.resolve().then(async () => {
+      const token = request.body?.token;
+      if (!validKernelServiceToken(token)) throw domainError(400, "INVALID_KERNEL_SERVICE_TOKEN", "Kernel service token must contain between 24 and 512 non-placeholder characters");
+      const requestedUrl = request.body?.url;
+      const url = requestedUrl === undefined
+        ? store.getSetting("kernel_url") ?? kernelServiceUrl
+        : normalizeKernelUrl(requestedUrl);
+      if (!url) throw domainError(400, "KERNEL_URL_INVALID", "Kernel URL must be an HTTP(S) authority without credentials, path, query or fragment");
+      const status = await probeKernel(url, token, releaseFetch, updateCheckTimeoutMs);
+      if (!status.reachable) throw domainError(409, "KERNEL_SERVICE_TOKEN_REJECTED", "Kernel Register did not validate the new service token");
+      store.updateKernelServiceAccess({ url, sealedToken: sealServiceToken(sessionKey, token) });
+      response.json({ configured: true, url, ...status });
+    }).catch(next);
   });
   app.put("/api/v1/settings/kernel-access", requireSameOrigin, (request, response, next) => {
     Promise.resolve().then(async () => {

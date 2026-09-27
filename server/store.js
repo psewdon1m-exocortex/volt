@@ -229,6 +229,19 @@ export class VoltStore {
     `).run(key, String(value));
   }
 
+  updateKernelServiceAccess({ url, sealedToken }) {
+    this.db.exec("BEGIN IMMEDIATE");
+    try {
+      this.setSetting("kernel_url", url);
+      this.setSetting("kernel_service_token_sealed", sealedToken);
+      this.audit({ actor: "operator", action: "kernel_service_access.rotate" });
+      this.db.exec("COMMIT");
+    } catch (error) {
+      this.db.exec("ROLLBACK");
+      throw error;
+    }
+  }
+
   getTrashRetentionDays() {
     const value = Number(this.getSetting("trash_retention_days"));
     return Number.isInteger(value) && value >= MIN_TRASH_RETENTION_DAYS && value <= MAX_TRASH_RETENTION_DAYS
@@ -834,7 +847,7 @@ export class VoltStore {
     const tables = {
       settings: this.db.prepare(`
         SELECT key, value FROM settings
-        WHERE key NOT IN ('access_key_hash', 'auth_generation', 'kernel_token_hash', 'backup_policy_restore')
+        WHERE key NOT IN ('access_key_hash', 'auth_generation', 'kernel_token_hash', 'backup_policy_restore', 'kernel_service_token_sealed')
         ORDER BY key
       `).all(),
       entries: this.db.prepare(`
@@ -876,6 +889,7 @@ export class VoltStore {
     const policy = restoredPolicyRecord(state.backup_policy);
     const preservedAccessKeyHash = this.getSetting("access_key_hash");
     const preservedKernelTokenHash = this.getSetting("kernel_token_hash");
+    const preservedKernelServiceToken = this.getSetting("kernel_service_token_sealed");
     const nextAuthGeneration = this.getAuthGeneration() + 1;
     const entryById = new Map(state.entries.map((entry) => [entry.id, entry]));
     const revisionById = new Map(state.revisions.map((revision) => [revision.id, revision]));
@@ -912,10 +926,11 @@ export class VoltStore {
       `);
       const settings = this.db.prepare("INSERT INTO settings(key, value) VALUES(?, ?)");
       for (const row of state.settings) {
-        if (!["access_key_hash", "auth_generation", "kernel_token_hash", "backup_policy_restore"].includes(row.key)) settings.run(row.key, row.value);
+        if (!["access_key_hash", "auth_generation", "kernel_token_hash", "backup_policy_restore", "kernel_service_token_sealed"].includes(row.key)) settings.run(row.key, row.value);
       }
       if (preservedAccessKeyHash) settings.run("access_key_hash", preservedAccessKeyHash);
       if (preservedKernelTokenHash) settings.run("kernel_token_hash", preservedKernelTokenHash);
+      if (preservedKernelServiceToken) settings.run("kernel_service_token_sealed", preservedKernelServiceToken);
       settings.run("auth_generation", String(nextAuthGeneration));
       settings.run("backup_policy_restore", JSON.stringify(policy));
       const entries = this.db.prepare(`

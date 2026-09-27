@@ -14,6 +14,14 @@ export function deriveSessionKey(masterKey) {
   return Buffer.from(hkdfSync("sha256", masterKey, Buffer.alloc(0), "exocortex-volt/session/v1", 32));
 }
 
+export function sealServiceToken(sessionKey, token) {
+  return JSON.stringify(seal(sessionKey, Buffer.from(token, "utf8"), "exocortex-volt:kernel-service-token:v1"));
+}
+
+export function openServiceToken(sessionKey, encoded) {
+  return open(sessionKey, JSON.parse(encoded), "exocortex-volt:kernel-service-token:v1").toString("utf8");
+}
+
 function seal(key, plaintext, aad) {
   const nonce = randomBytes(12);
   const cipher = createCipheriv(ALGORITHM, key, nonce, { authTagLength: 16 });
