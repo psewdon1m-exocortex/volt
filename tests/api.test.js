@@ -320,14 +320,14 @@ test("operator and machine APIs keep list responses masked", async (context) => 
   const interfaceUpdate = await fetch(`${base}/api/v1/settings/interface`, {
     method: "PUT",
     headers: { cookie, "content-type": "application/json" },
-    body: JSON.stringify({ accent: "#62FF8C", sidebar_mode: "auto", activity_ranking_enabled: true, navigation_order: ["vault", "dashboard", "trash", "audit", "settings"] }),
+    body: JSON.stringify({ accent: "#62FF8C", sidebar_mode: "auto", activity_ranking_enabled: true, navigation_order: ["vault", "shared", "dashboard", "trash", "audit", "settings"] }),
   });
   const interfaceSettings = await interfaceUpdate.json();
   assert.equal(interfaceUpdate.status, 200);
   assert.equal(interfaceSettings.accent, "#62FF8C");
   assert.equal(interfaceSettings.sidebar_mode, "auto");
   assert.equal(interfaceSettings.activity_ranking_enabled, true);
-  assert.deepEqual(interfaceSettings.navigation_order, ["vault", "dashboard", "trash", "audit", "settings"]);
+  assert.deepEqual(interfaceSettings.navigation_order, ["vault", "shared", "dashboard", "trash", "audit", "settings"]);
   const secret = "api-secret-value";
   const created = await fetch(`${base}/api/v1/entries`, {
     method: "POST",

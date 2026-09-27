@@ -22,8 +22,10 @@ import {
 } from "./security.js";
 import { domainError, MAX_TRASH_RETENTION_DAYS, MIN_TRASH_RETENTION_DAYS } from "./store.js";
 import { normalizeEntryPayload, normalizeReason } from "./validation.js";
+import { ShareService } from "./shares.js";
 
 const COOKIE_NAME = "volt_session";
+const SHARE_COOKIE = "volt_share_session";
 const BLOCKED_PROBE_PATH = /(^|\/)\.|\.(?:env|ini|log|sql|bak|backup|old|swp|zip|tar|gz)$/i;
 
 function apiError(res, error, requestId) {
@@ -126,6 +128,7 @@ export function createApp({
   updateCheckTimeoutMs = 5_000,
 }) {
   const app = express();
+  const shares = new ShareService(store);
   const backupPolicy = createBackupPolicy({
     client: neptuneClient, configured: () => Boolean(neptuneExportTokenFile),
     readPending: () => JSON.parse(store.getSetting("backup_policy_restore") || "null"),
@@ -305,6 +308,39 @@ export function createApp({
     response.status(204).end();
   });
 
+  // Visitor credentials never enter the operator API. The URL fragment is
+  // exchanged in a POST body, so it does not appear in HTTP request targets.
+  function shareMutation(request, response, next) {
+    if (request.get("sec-fetch-site") === "cross-site" || !request.get("origin")) {
+      return next(domainError(403, "ORIGIN_REJECTED", "Same-origin request required"));
+    }
+    return requireSameOrigin(request, response, next);
+  }
+  app.get("/public/shares/:shareId/policy", (request, response, next) => {
+    try { response.json({ ...shares.policy(request.params.shareId), accent: store.getInterfaceSettings().accent }); } catch (error) { next(error); }
+  });
+  app.post("/public/shares/:shareId/session", shareMutation, (request, response, next) => {
+    try {
+      const body = request.body;
+      if (!body || typeof body !== "object" || Array.isArray(body) || Object.keys(body).some(key => !["token", "password"].includes(key))) {
+        throw domainError(400, "INVALID_REQUEST", "Invalid Share request");
+      }
+      const session = shares.unlock(request.params.shareId, body.token, body.password, request.ip);
+      response.cookie(SHARE_COOKIE, session.token, {
+        httpOnly: true, secure: secureCookies, sameSite: "strict",
+        path: `/public/shares/${request.params.shareId}`, maxAge: 30 * 60_000,
+      });
+      response.json({ expires_at: session.expires_at });
+    } catch (error) { next(error); }
+  });
+  app.get("/public/shares/:shareId/entry", (request, response, next) => {
+    try { response.json(shares.view(request.params.shareId, request.cookies[SHARE_COOKIE])); } catch (error) { next(error); }
+  });
+  app.post("/public/shares/:shareId/fields/:fieldId/reveal", shareMutation, (request, response, next) => {
+    try { response.json(shares.reveal(request.params.shareId, request.cookies[SHARE_COOKIE], request.params.fieldId)); }
+    catch (error) { next(error); }
+  });
+
   app.head(["/api/v1/internal/neptune/backup", "/api/v1/internal/neptune/mirror"], (request, response, next) => {
     try {
       if (!neptuneExportTokenFile) throw domainError(503, "NEPTUNE_NOT_CONFIGURED", "Neptune export token is not configured");
@@ -392,6 +428,18 @@ export function createApp({
   });
 
   app.use("/api/v1", requireOperator);
+
+  app.get("/api/v1/shares", (_request, response) => response.json({ shares: shares.list() }));
+  app.post("/api/v1/shares", requireSameOrigin, (request, response, next) => {
+    try { response.status(201).json(shares.create(request.body)); } catch (error) { next(error); }
+  });
+  app.get("/api/v1/shares/:shareId/link", (request, response, next) => {
+    try { shares.row(request.params.shareId); response.json({ path: shares.link(request.params.shareId) }); }
+    catch (error) { next(error); }
+  });
+  app.patch("/api/v1/shares/:shareId", requireSameOrigin, (request, response, next) => {
+    try { response.json(shares.change(request.params.shareId, request.body)); } catch (error) { next(error); }
+  });
 
   app.get("/api/v1/overview", (_request, response) => {
     response.json({ ...store.getStats(), appearance: "dark", interface: store.getInterfaceSettings() });
@@ -771,7 +819,7 @@ export function createApp({
   app.get("/robots.txt", (_request, response) => response.type("text/plain").send("User-agent: *\nDisallow: /\n"));
   if (distDir && existsSync(distDir)) {
     app.use(express.static(distDir, { etag: false, lastModified: false, maxAge: 0 }));
-    app.get(["/", "/dashboard", "/vault", "/trash", "/audit", "/settings", "/docs", "/documentation"], (_request, response) => response.sendFile(path.join(distDir, "index.html")));
+    app.get(["/", "/dashboard", "/vault", "/trash", "/shared", "/audit", "/settings", "/docs", "/documentation", "/share/:shareId"], (_request, response) => response.sendFile("index.html", { root: distDir }));
   }
 
   app.use((request, _response, next) => next(domainError(404, "NOT_FOUND", `No route for ${request.method} ${request.path}`)));

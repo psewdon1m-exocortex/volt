@@ -24,7 +24,8 @@ function isoNow() {
 }
 
 const DEFAULT_ACCENT = "#00A8FF";
-const DEFAULT_NAVIGATION_ORDER = ["dashboard", "vault", "trash", "audit", "settings"];
+const DEFAULT_NAVIGATION_ORDER = ["dashboard", "vault", "shared", "trash", "audit", "settings"];
+const PREVIOUS_NAVIGATION_ORDER = ["dashboard", "vault", "trash", "audit", "settings"];
 const DEFAULT_SETTINGS_ORDER = ["appearance", "security", "backup", "updates", "logs", "cryptography"];
 const DEFAULT_DASHBOARD_ORDER = ["cpu", "memory", "disk", "uptime", "entities"];
 export const DEFAULT_TRASH_RETENTION_DAYS = 30;
@@ -167,6 +168,34 @@ export class VoltStore {
         details_json TEXT,
         created_at TEXT NOT NULL
       );
+        CREATE TABLE IF NOT EXISTS shares (
+        id TEXT PRIMARY KEY,
+        entry_id TEXT NOT NULL,
+        revision_id TEXT NOT NULL,
+        field_ids TEXT NOT NULL,
+        password_hash TEXT,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        expires_at TEXT NOT NULL,
+        revoked_at TEXT,
+        policy_version INTEGER NOT NULL DEFAULT 1,
+        FOREIGN KEY (entry_id) REFERENCES entries(id) ON DELETE CASCADE,
+        FOREIGN KEY (revision_id) REFERENCES entry_revisions(id) ON DELETE CASCADE
+      );
+        CREATE TABLE IF NOT EXISTS share_sessions (
+        token_hash TEXT PRIMARY KEY,
+        share_id TEXT NOT NULL,
+        policy_version INTEGER NOT NULL,
+        expires_at TEXT NOT NULL,
+        FOREIGN KEY (share_id) REFERENCES shares(id) ON DELETE CASCADE
+      );
+        CREATE TABLE IF NOT EXISTS share_attempts (
+        share_id TEXT NOT NULL,
+        address_hash TEXT NOT NULL,
+        occurred_at TEXT NOT NULL
+      );
+        CREATE INDEX IF NOT EXISTS idx_shares_entry ON shares(entry_id, revoked_at);
+        CREATE INDEX IF NOT EXISTS idx_share_attempts_time ON share_attempts(occurred_at);
         CREATE INDEX IF NOT EXISTS idx_entries_position ON entries(deleted_at, position, updated_at DESC);
         CREATE INDEX IF NOT EXISTS idx_revisions_entry ON entry_revisions(entry_id, revision_number DESC);
         CREATE INDEX IF NOT EXISTS idx_audit_created ON audit_events(created_at DESC);
@@ -318,11 +347,14 @@ export class VoltStore {
     const navigationOrder = parseJson(this.getSetting("navigation_order"), DEFAULT_NAVIGATION_ORDER);
     const settingsOrder = parseJson(this.getSetting("settings_order"), DEFAULT_SETTINGS_ORDER);
     const dashboardOrder = parseJson(this.getSetting("dashboard_order"), DEFAULT_DASHBOARD_ORDER);
+    const migratedOrder = validOrder(navigationOrder, PREVIOUS_NAVIGATION_ORDER)
+      ? [...navigationOrder.slice(0, navigationOrder.indexOf("vault") + 1), "shared", ...navigationOrder.slice(navigationOrder.indexOf("vault") + 1)]
+      : navigationOrder;
     return {
       accent: /^#[0-9A-F]{6}$/.test(accent) ? accent : DEFAULT_ACCENT,
       sidebar_mode: this.getSetting("sidebar_mode") === "auto" ? "auto" : "fixed",
       activity_ranking_enabled: this.getSetting("activity_ranking_enabled") === "1",
-      navigation_order: validOrder(navigationOrder, DEFAULT_NAVIGATION_ORDER) ? navigationOrder : [...DEFAULT_NAVIGATION_ORDER],
+      navigation_order: validOrder(migratedOrder, DEFAULT_NAVIGATION_ORDER) ? migratedOrder : [...DEFAULT_NAVIGATION_ORDER],
       settings_order: validOrder(settingsOrder, DEFAULT_SETTINGS_ORDER) ? settingsOrder : [...DEFAULT_SETTINGS_ORDER],
       dashboard_order: validOrder(dashboardOrder, DEFAULT_DASHBOARD_ORDER) ? dashboardOrder : [...DEFAULT_DASHBOARD_ORDER],
     };
@@ -708,8 +740,18 @@ export class VoltStore {
   deleteEntry(entryId, { actor = "operator" } = {}) {
     const row = this.#entryRow(entryId);
     const deletedAt = isoNow();
-    this.db.prepare("UPDATE entries SET deleted_at = ?, updated_at = ? WHERE id = ?")
-      .run(deletedAt, deletedAt, entryId);
+    this.db.exec("SAVEPOINT entry_delete");
+    try {
+      this.db.prepare("UPDATE entries SET deleted_at = ?, updated_at = ? WHERE id = ?")
+        .run(deletedAt, deletedAt, entryId);
+      this.db.prepare("UPDATE shares SET revoked_at = ?, updated_at = ?, policy_version = policy_version + 1 WHERE entry_id = ? AND revoked_at IS NULL")
+        .run(deletedAt, deletedAt, entryId);
+      this.db.prepare("DELETE FROM share_sessions WHERE share_id IN (SELECT id FROM shares WHERE entry_id = ?)").run(entryId);
+      this.db.exec("RELEASE entry_delete");
+    } catch (error) {
+      this.db.exec("ROLLBACK TO entry_delete; RELEASE entry_delete");
+      throw error;
+    }
     this.audit({ actor, action: "entry.delete", target: entryId, details: { revision: Number(row.revision_number) } });
   }
 
@@ -919,6 +961,9 @@ export class VoltStore {
     try {
       this.db.exec(`
         DELETE FROM audit_events;
+        DELETE FROM share_attempts;
+        DELETE FROM share_sessions;
+        DELETE FROM shares;
         UPDATE entries SET current_revision_id = NULL;
         DELETE FROM entry_revisions;
         DELETE FROM entries;

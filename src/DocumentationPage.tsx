@@ -90,6 +90,18 @@ const articles: DocumentationArticle[] = [
     ],
   },
   {
+    id: "shares",
+    group: "Operate",
+    title: "Shared entries",
+    summary: "Send a short-lived link to selected values without giving access to the Vault.",
+    keywords: "share shared link password expiry revoke selected fields read only",
+    sections: [
+      { title: "Create a Share", paragraphs: ["Choose Share on an entry or open Shared → Create Share. Select exactly the values to send, choose an expiry within 30 days, and optionally set a separate Share password. The link captures those values from the current revision."], bullets: ["The default expiry is 24 hours.", "A later edit to the Vault entry does not update the Share.", "Send the Share password through a separate channel if you use one."] },
+      { title: "Visitor access", paragraphs: ["The visitor sees only the selected values. Secret values remain masked until Reveal or Copy. There is no public edit action or access to other Vault entries."], note: "Anyone with an unprotected Share link can open it before it expires. Revoking a link prevents further access but cannot remove values that a visitor has already copied." },
+      { title: "Manage links", paragraphs: ["Shared lists active and expired links. Copy link works again after signing back in. Policy changes close existing visitor sessions. Revoke permanently disables a link, and moving its source entry to Trash also revokes it."], note: "A logical backup restore does not restore active Share links." },
+    ],
+  },
+  {
     id: "trash",
     group: "Operate",
     title: "Trash and deletion",

@@ -13,6 +13,9 @@ import { VoltStore } from "../server/store.js";
 test("cold runtime stays locked with a device key and opens only after a valid operator Access Key", async () => {
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), "volt-locked-"));
   const filename = path.join(directory, "personal.volt");
+  const distDir = path.join(directory, "dist");
+  fs.mkdirSync(distDir);
+  fs.writeFileSync(path.join(distDir, "index.html"), "<!doctype html><title>Volt test</title>");
   const key = "k";
   const deviceKey = randomBytes(32);
   createPortableVault({ filename, accessKey: key, deviceKey }).masterKey.fill(0);
@@ -21,7 +24,7 @@ test("cold runtime stays locked with a device key and opens only after a valid o
     const vault = unlockPortableVault({ filename, accessKey, deviceKey });
     store = new VoltStore({ filename, masterKey: vault.masterKey });
     return createApp({ store, sessionKey: deriveSessionKey(vault.masterKey), accessKey });
-  } });
+  }, distDir });
   const server = app.listen(0, "127.0.0.1");
   await new Promise(resolve => server.once("listening", resolve));
   const base = `http://127.0.0.1:${server.address().port}`;
@@ -30,6 +33,8 @@ test("cold runtime stays locked with a device key and opens only after a valid o
     assert.equal((await fetch(base + "/api/v1/health")).status, 503);
     assert.equal((await fetch(base + "/health/live")).status, 200);
     assert.equal((await fetch(base + "/api/v1/session").then(r => r.json())).locked, true);
+    assert.equal((await fetch(base + "/shared")).status, 200);
+    assert.equal((await fetch(base + "/share/demo-id")).status, 200);
     assert.equal((await fetch(base + "/unknown-probe")).status, 404);
     assert.equal((await login("incorrect-runtime-key")).status, 401);
     assert.equal(store, undefined);

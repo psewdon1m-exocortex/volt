@@ -6,12 +6,13 @@ import { DashboardPage } from "./DashboardPage";
 import { DocumentationPage } from "./DocumentationPage";
 import { Icon } from "./icons";
 import { SettingsPage } from "./SettingsPage";
+import { SharesPage } from "./SharesPage";
 import { TrashPage } from "./TrashPage";
 import { VoltLogo } from "./Ui";
 import { applyAccent, dropItem, errorMessage, moveItem, type Toast } from "./ui-helpers";
 import { VaultPage } from "./VaultPage";
 
-type PrimaryPage = "dashboard" | "vault" | "trash" | "audit" | "settings";
+type PrimaryPage = "dashboard" | "vault" | "shared" | "trash" | "audit" | "settings";
 type Page = PrimaryPage | "docs";
 type Notice = { id: string; message: string; tone: "ok" | "error" };
 
@@ -19,7 +20,7 @@ const DEFAULT_INTERFACE: InterfaceSettings = {
   accent: "#00A8FF",
   sidebar_mode: "fixed",
   activity_ranking_enabled: false,
-  navigation_order: ["dashboard", "vault", "trash", "audit", "settings"],
+  navigation_order: ["dashboard", "vault", "shared", "trash", "audit", "settings"],
   settings_order: ["appearance", "security", "backup", "updates", "logs", "cryptography"],
   dashboard_order: ["cpu", "memory", "disk", "uptime", "entities"],
 };
@@ -27,6 +28,7 @@ const DEFAULT_INTERFACE: InterfaceSettings = {
 const labels: Record<PrimaryPage, { title: string; nav: string; icon: string }> = {
   dashboard: { title: "dashboard", nav: "Dashboard", icon: "dashboard" },
   vault: { title: "vault", nav: "Vault", icon: "vault" },
+  shared: { title: "shared", nav: "Shared", icon: "link" },
   trash: { title: "trash", nav: "Trash", icon: "trash" },
   audit: { title: "audit", nav: "Audit", icon: "audit" },
   settings: { title: "settings", nav: "Settings", icon: "settings" },
@@ -78,7 +80,10 @@ export function App() {
   const [ready, setReady] = useState(false);
   const [authenticated, setAuthenticated] = useState(false);
   const [settings, setSettings] = useState(DEFAULT_INTERFACE);
-  const [page, setPage] = useState<Page>("dashboard");
+  const [page, setPage] = useState<Page>(() => {
+    const path = window.location.pathname.slice(1);
+    return path === "documentation" || path === "docs" ? "docs" : Object.hasOwn(labels, path) ? path as PrimaryPage : "dashboard";
+  });
   const [notices, setNotices] = useState<Notice[]>([]);
   const [mobile, setMobile] = useState(() => window.matchMedia("(max-width: 720px)").matches);
   const [mobileOpen, setMobileOpen] = useState(false);
@@ -89,6 +94,14 @@ export function App() {
   useEffect(() => { api.session().then((session) => { setAuthenticated(session.authenticated); setSettings(session.interface ?? DEFAULT_INTERFACE); applyAccent(session.interface?.accent ?? DEFAULT_INTERFACE.accent); }).finally(() => setReady(true)); }, []);
   useEffect(() => { const media = window.matchMedia("(max-width: 720px)"); const listener = () => { setMobile(media.matches); if (!media.matches) setMobileOpen(false); }; media.addEventListener("change", listener); return () => media.removeEventListener("change", listener); }, []);
   useEffect(() => { applyAccent(settings.accent); }, [settings.accent]);
+  useEffect(() => {
+    const onHistory = () => {
+      const path = window.location.pathname.slice(1);
+      setPage(path === "documentation" || path === "docs" ? "docs" : Object.hasOwn(labels, path) ? path as PrimaryPage : "dashboard");
+    };
+    window.addEventListener("popstate", onHistory);
+    return () => window.removeEventListener("popstate", onHistory);
+  }, []);
   useEffect(() => {
     function proportionalCardHover(event: Event) {
       const card = event.target instanceof Element ? event.target.closest<HTMLElement>(".universal-card, .button, .choice, .search, .collection-command-bar select") : null;
@@ -114,7 +127,7 @@ export function App() {
   }, []);
 
   async function lock() { try { await api.lock(); } finally { setAuthenticated(false); setMobileOpen(false); } }
-  function navigate(next: Page) { setPage(next); setMobileOpen(false); }
+  function navigate(next: Page) { window.history.pushState(null, "", next === "docs" ? "/documentation" : `/${next}`); setPage(next); setMobileOpen(false); }
 
   async function reorderNavigation(index: number, direction: -1 | 1) {
     const order = moveItem(settings.navigation_order, index, direction);
@@ -139,6 +152,7 @@ export function App() {
   const content = useMemo<Record<Page, React.ReactNode>>(() => ({
     dashboard: <DashboardPage settings={settings} onSettings={setSettings} toast={toast} />,
     vault: <VaultPage rankingEnabled={settings.activity_ranking_enabled} toast={toast} />,
+    shared: <SharesPage toast={toast} />,
     trash: <TrashPage toast={toast} />,
     audit: <AuditPage toast={toast} />,
     settings: <SettingsPage settings={settings} onSettings={setSettings} onLocked={() => setAuthenticated(false)} toast={toast} />,

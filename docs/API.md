@@ -20,6 +20,9 @@ mutation policy. Machine endpoint принимает только общий Bea
 | `POST` | `/api/v1/trash/:id/restore` | Восстановление entry без изменения ревизии |
 | `DELETE` | `/api/v1/trash/:id` | Необратимое удаление entry и всех ревизий |
 | `POST` | `/api/v1/entries/:id/fields/:field/reveal` | Явное раскрытие |
+| `GET/POST` | `/api/v1/shares` | Список ссылок без значений / создание снимка выбранных полей текущей ревизии |
+| `GET` | `/api/v1/shares/:id/link` | Повторное получение ссылки владельцем |
+| `PATCH` | `/api/v1/shares/:id` | Изменить expiry/password или окончательно отозвать ссылку |
 | `GET` | `/api/v1/entries/:id/revisions` | Метаданные истории |
 | `POST` | `/api/v1/entries/:id/revisions/:revision/restore` | Restore как новая ревизия |
 | `POST` | `/api/v1/generate` | CSPRNG generators |
@@ -41,6 +44,31 @@ mutation policy. Machine endpoint принимает только общий Bea
 | `GET` | `/api/v1/backup` | Свежий ZIP |
 | `POST` | `/api/v1/backup/inspect` | Проверка ZIP без мутации |
 | `POST` | `/api/v1/backup/restore` | Подтверждённый replace restore |
+
+## Public Shares
+
+`POST /api/v1/shares` принимает `entry_id`, `expected_revision`, массив
+`field_ids`, `expires_at` в ISO 8601 и необязательный `password`. Срок обязателен:
+до 30 дней, по умолчанию интерфейс предлагает 24 часа. Ответ содержит
+`/share/<id>#<capability>`. Фрагмент не передаётся при загрузке HTML; публичный
+клиент отправляет его в JSON на `POST /public/shares/:id/session` вместе с
+паролем ссылки, если он установлен. Публичные операции не используют operator
+cookie и требуют отдельную короткую HttpOnly session cookie.
+
+| Method | Path | Назначение |
+| --- | --- | --- |
+| `GET` | `/public/shares/:id/policy` | Только признак обязательного пароля |
+| `POST` | `/public/shares/:id/session` | Обмен capability и пароля на scoped session |
+| `GET` | `/public/shares/:id/entry` | Название и выбранные поля; secret values masked |
+| `POST` | `/public/shares/:id/fields/:field/reveal` | Одно выбранное значение |
+
+Публичных маршрутов изменения записи нет. Share привязан к неизменяемой ревизии,
+поэтому последующая смена пароля в Volt не раскрывает его по прежней ссылке.
+Удаление записи окончательно отзывает ссылки, включая при восстановлении из
+корзины. Логический restore удаляет текущие Share records; signing key хранится
+отдельно от `personal.volt` в `<vault-file>.share-key` и не входит в переносимый
+файл. Для ссылок действуют `no-store`, `no-referrer`, лимит попыток и аудит без
+токенов, паролей и значений полей.
 
 ## Machine resolve
 

@@ -285,7 +285,7 @@ test("interface settings persist validated orders and reject low-contrast accent
     accent: "#00A8FF",
     sidebar_mode: "fixed",
     activity_ranking_enabled: false,
-    navigation_order: ["dashboard", "vault", "trash", "audit", "settings"],
+    navigation_order: ["dashboard", "vault", "shared", "trash", "audit", "settings"],
     settings_order: ["appearance", "security", "backup", "updates", "logs", "cryptography"],
     dashboard_order: ["cpu", "memory", "disk", "uptime", "entities"],
   });
@@ -299,6 +299,8 @@ test("interface settings persist validated orders and reject low-contrast accent
   assert.equal(changed.sidebar_mode, "auto");
   assert.equal(changed.activity_ranking_enabled, true);
   assert.deepEqual(store.getInterfaceSettings().dashboard_order, ["uptime", "cpu", "memory", "disk", "entities"]);
+  store.setSetting("navigation_order", JSON.stringify(["settings", "vault", "dashboard", "trash", "audit"]));
+  assert.deepEqual(store.getInterfaceSettings().navigation_order, ["settings", "vault", "shared", "dashboard", "trash", "audit"]);
   assert.throws(() => store.setInterfaceSettings({ accent: "#111111" }), { code: "ACCENT_CONTRAST_LOW" });
   assert.throws(() => store.setInterfaceSettings({ navigation_order: ["dashboard", "vault"] }), { code: "NAVIGATION_ORDER_INVALID" });
 }));

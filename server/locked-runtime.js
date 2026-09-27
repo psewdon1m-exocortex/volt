@@ -40,7 +40,7 @@ export function createLockedRuntime({ unlock, distDir, initialApp = null, trustP
   });
   if (distDir) {
     gateway.use("/assets", express.static(path.join(distDir, "assets"), { index: false, dotfiles: "deny" }));
-    gateway.get(["/", "/dashboard", "/vault", "/trash", "/audit", "/settings", "/docs", "/documentation"], (_request, response) => response.sendFile(path.join(distDir, "index.html")));
+    gateway.get(["/", "/dashboard", "/vault", "/trash", "/shared", "/audit", "/settings", "/docs", "/documentation", "/share/:shareId"], (_request, response) => response.sendFile("index.html", { root: distDir }));
     gateway.get("/robots.txt", (_request, response) => response.type("text/plain").send("User-agent: *\nDisallow: /\n"));
   }
   gateway.use((_request, response) => response.status(404).json({ error: { code: "NOT_FOUND", message: "Not found" } }));

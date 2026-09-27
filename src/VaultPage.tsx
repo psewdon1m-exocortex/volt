@@ -3,6 +3,7 @@ import { useEffect, useId, useMemo, useState } from "react";
 import { ApiError, api } from "./api";
 import { ConfirmDialog } from "./ConfirmDialog";
 import { Icon } from "./icons";
+import { ShareDialog } from "./SharesPage";
 import type { Entry, GeneratedValue, Revision, VoltField } from "./types";
 import { DragDots, Modal, SearchField } from "./Ui";
 import { dropItem, moveItem } from "./ui-helpers";
@@ -380,6 +381,7 @@ function EntryCard({ entry, index, projectOptions, onChanged, onInteracted, toas
   const [editorFields, setEditorFields] = useState<EditorValue[] | null>(null);
   const [loadingEdit, setLoadingEdit] = useState(false);
   const [deletePending, setDeletePending] = useState(false);
+  const [sharePending, setSharePending] = useState(false);
   const [dragReady, setDragReady] = useState(false);
 
   async function openEditor() {
@@ -405,12 +407,13 @@ function EntryCard({ entry, index, projectOptions, onChanged, onInteracted, toas
   return <>
     <article className={`entry-card universal-card${dragging === entry.id ? " dragging" : ""}${dropClass}`} draggable={dragReady} onDoubleClick={(event) => { if (!(event.target instanceof Element && event.target.closest("button, input, textarea, select, a"))) void openEditor(); }} onDragStart={(event) => { event.dataTransfer.effectAllowed = "move"; onDragStart(); }} onDragEnd={() => { setDragReady(false); onDragEnd(); }} onDragOver={(event) => { event.preventDefault(); const rect = event.currentTarget.getBoundingClientRect(); onDragPosition(event.clientY < rect.top + rect.height / 2); }} onDrop={(event) => { event.preventDefault(); setDragReady(false); onDrop(); }}>
       <div className="card-main">
-        <header className="entry-header"><div className="entry-title"><span className="card-ordinal">{String(index + 1).padStart(2, "0")}</span><h3>{entry.title}</h3><code className="entry-id">ID {entry.id}</code></div><div className="entry-actions"><button className="icon-button" title="Edit" disabled={loadingEdit} onClick={(event) => { event.stopPropagation(); void openEditor(); }}><Icon name="edit" /></button><button className="icon-button danger" title="Delete" onClick={() => setDeletePending(true)}><Icon name="trash" /></button><DragDots label={`Move ${entry.title}`} onPointerDown={() => setDragReady(true)} onPointerUp={() => setDragReady(false)} onKeyDown={(event) => { if (!event.altKey || !["ArrowUp", "ArrowDown"].includes(event.key)) return; event.preventDefault(); move(event.key === "ArrowUp" ? -1 : 1); }} /></div></header>
+        <header className="entry-header"><div className="entry-title"><span className="card-ordinal">{String(index + 1).padStart(2, "0")}</span><h3>{entry.title}</h3><code className="entry-id">ID {entry.id}</code></div><div className="entry-actions"><button className="icon-button" title="Share" aria-label={`Share ${entry.title}`} onClick={(event) => { event.stopPropagation(); setSharePending(true); }}><Icon name="link" /></button><button className="icon-button" title="Edit" disabled={loadingEdit} onClick={(event) => { event.stopPropagation(); void openEditor(); }}><Icon name="edit" /></button><button className="icon-button danger" title="Delete" onClick={() => setDeletePending(true)}><Icon name="trash" /></button><DragDots label={`Move ${entry.title}`} onPointerDown={() => setDragReady(true)} onPointerUp={() => setDragReady(false)} onKeyDown={(event) => { if (!event.altKey || !["ArrowUp", "ArrowDown"].includes(event.key)) return; event.preventDefault(); move(event.key === "ArrowUp" ? -1 : 1); }} /></div></header>
         <div className="entry-meta">{entry.projects.map((project) => <span className="project-tag" key={project}>{project}</span>)}<span>v{entry.revision}</span><span>{dateTime(entry.updated_at)}</span></div>
         <div className="field-list">{entry.fields.map((field, index) => <FieldValue key={field.id} entryId={entry.id} field={field} position={index + 1} toast={toast} onInteracted={onInteracted} />)}</div>
       </div>
     </article>
     {editorFields && <EntryEditor entry={entry} initialFields={editorFields} projectOptions={projectOptions} toast={toast} onClose={() => { setEditorFields(null); onChanged(); }} onSaved={() => { setEditorFields(null); onChanged(); }} />}
+    {sharePending && <ShareDialog initialEntry={entry} onClose={() => setSharePending(false)} onCreated={() => {}} toast={toast} />}
     {deletePending && <ConfirmDialog title={`Move “${entry.title}” to trash?`} body={<p>The entity will leave the vault and remain recoverable for the retention period configured in Settings. After that, all encrypted revisions will be permanently erased.</p>} confirmLabel="Move to trash" danger onClose={() => setDeletePending(false)} onConfirm={remove} />}
   </>;
 }

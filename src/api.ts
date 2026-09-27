@@ -88,6 +88,26 @@ export type InterfaceSettings = {
   dashboard_order: string[];
 };
 
+export type ShareRecord = {
+  id: string;
+  entry_id: string;
+  title: string;
+  revision: number | null;
+  field_names: string[];
+  field_count: number;
+  password_required: boolean;
+  created_at: string;
+  updated_at: string;
+  expires_at: string;
+  status: "active" | "expired" | "unavailable";
+};
+
+export type SharedEntry = {
+  title: string;
+  revision: number;
+  fields: Array<{ id: string; key: string; visibility: "secret" | "plain"; value: string | null; length?: number }>;
+};
+
 export type DashboardStats = {
   measured_at: string;
   entries: number;
@@ -134,6 +154,14 @@ export const api = {
   overview: () => request<{ entries: number; revisions: number; appearance: "dark"; interface: InterfaceSettings }>("/api/v1/overview"),
   dashboard: () => request<DashboardStats>("/api/v1/dashboard"),
   entries: () => request<{ entries: Entry[] }>("/api/v1/entries"),
+  shares: () => request<{ shares: ShareRecord[] }>("/api/v1/shares"),
+  createShare: (body: { entry_id: string; field_ids: string[]; expected_revision: number; password?: string | null; expires_at: string }) => request<{ id: string; path: string }>("/api/v1/shares", { method: "POST", body: JSON.stringify(body) }),
+  shareLink: (id: string) => request<{ path: string }>(`/api/v1/shares/${id}/link`),
+  updateShare: (id: string, body: { expires_at?: string; password?: string | null; revoke?: true }) => request<{ updated: true }>(`/api/v1/shares/${id}`, { method: "PATCH", body: JSON.stringify(body) }),
+  publicSharePolicy: (id: string) => request<{ password_required: boolean; accent: string }>(`/public/shares/${id}/policy`),
+  publicShareEntry: (id: string) => request<SharedEntry>(`/public/shares/${id}/entry`),
+  publicShareSession: (id: string, token: string, password?: string) => request<{ expires_at: string }>(`/public/shares/${id}/session`, { method: "POST", body: JSON.stringify({ token, password }) }),
+  publicShareReveal: (id: string, fieldId: string) => request<{ value: string }>(`/public/shares/${id}/fields/${fieldId}/reveal`, { method: "POST", body: "{}" }),
   createEntry: (payload: unknown) => request<Entry>("/api/v1/entries", { method: "POST", body: JSON.stringify(payload) }),
   updateEntry: (id: string, payload: unknown) => request<Entry>(`/api/v1/entries/${id}`, { method: "PUT", body: JSON.stringify(payload) }),
   deleteEntry: (id: string) => request<void>(`/api/v1/entries/${id}`, { method: "DELETE" }),
