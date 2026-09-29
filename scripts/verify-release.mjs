@@ -35,6 +35,9 @@ for (const required of [
   "updater/install.sh",
   "updater/updater-linux-amd64",
   "updater/systemd/updater.service",
+  "helpers/neptune/neptune-linux-release-linux-x64.json",
+  "helpers/neptune/neptune-linux-release-linux-x64.json.sig.json",
+  `helpers/neptune/neptune-linux-${fs.readFileSync('.release/neptune.version', 'utf8').trim()}-linux-x64.tar.gz`,
 ]) {
   if (!members.includes(required)) throw new Error(`compose bundle is missing ${required}`);
 }

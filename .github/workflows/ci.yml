@@ -48,12 +48,19 @@ jobs:
               "$updater_bundle/release-trust/$helper.pem"
           done
           rm -f "$RUNNER_TEMP/volt-ci-updater-private.pem"
+          helper_dir="$RUNNER_TEMP/volt-ci-helpers/neptune"
+          mkdir -p "$helper_dir"
+          helper_version="$(tr -d '[:space:]' < .release/neptune.version)"
+          printf '{}\n' > "$helper_dir/neptune-linux-release-linux-x64.json"
+          printf '{}\n' > "$helper_dir/neptune-linux-release-linux-x64.json.sig.json"
+          : > "$helper_dir/neptune-linux-${helper_version}-linux-x64.tar.gz"
           updater_version="$(tr -d '[:space:]' < .release/updater.version)"
           repository="$GITHUB_REPOSITORY"
           GITHUB_REPOSITORY="$repository" \
             IMAGE_REFERENCE="ghcr.io/${repository,,}" \
             IMAGE_DIGEST="sha256:$(printf 'a%.0s' {1..64})" \
             UPDATER_BUNDLE_DIR="$updater_bundle" \
+            HOST_HELPER_BUNDLE_DIR="$RUNNER_TEMP/volt-ci-helpers" \
             UPDATER_BUNDLE_VERSION="$updater_version" \
             bash scripts/build-release.sh 0.0.0-ci release-artifacts-ci
           node scripts/verify-release.mjs release-artifacts-ci/volt-release.json
