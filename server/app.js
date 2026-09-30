@@ -559,19 +559,11 @@ export function createApp({
     }
   });
   app.post("/api/v1/update/updater/check", requireSameOrigin, async (_request, response, next) => {
-    try {
-      if (!updaterClient) throw domainError(503, "UPDATER_NOT_CONFIGURED", "Updater is not configured");
-      const status = await updaterClient.status();
-      if (!status.version) throw domainError(503, "UPDATER_UNAVAILABLE", "Updater did not report its installed version");
-      response.json(await checkRelease("updater", status.version));
-    } catch (error) { next(error); }
+    response.status(403).json({ error: "Check Updater releases with sudo updater tui on the host" });
   });
 
   app.post("/api/v1/update/updater/install", requireSameOrigin, async (_request, response, next) => {
-    try {
-      if (!updaterClient) throw domainError(503, "UPDATER_NOT_CONFIGURED", "Updater is not configured");
-      response.status(202).json(await updaterClient.selfUpdate());
-    } catch (error) { next(error); }
+    response.status(403).json({ error: "Update Updater with sudo updater tui on the host" });
   });
   mountUpdateFlow(app, { prefix: "/api/v1/update-flow", service: "volt", authorize: requireOperator, mutation: [requireSameOrigin],
     headId: process.env.UPDATER_HEAD_ID || process.env.UPDATER_REGISTERED_HEAD_ID || "volt", token: () => updaterControlToken,

@@ -145,7 +145,10 @@ test("Volt release discovery, updater install, job control and rollback restore 
   assert.equal((await fetch(`${base}/api/v1/update/jobs/${completedJob.id}`, { headers: { cookie } })).status, 200);
   assert.equal((await fetch(`${base}/api/v1/update/jobs/${completedJob.id}/rollback`, { method: "POST", headers: { cookie, "content-type": "application/json" }, body: "{}" })).status, 202);
   const updaterChecked = await fetch(`${base}/api/v1/update/updater/check`, { method: "POST", headers: { cookie, "content-type": "application/json" }, body: "{}" });
-  assert.equal((await updaterChecked.json()).available_version, "0.4.0");
+  assert.equal(updaterChecked.status, 403);
+  assert.equal((await fetch(`${base}/api/v1/update/updater/install`, { method: "POST", headers: { cookie, "content-type": "application/json" }, body: "{}" })).status, 403);
+  assert.equal((await fetch(`${base}/api/v1/update-flow/check`, { method: "POST", headers: { cookie, "content-type": "application/json" }, body: JSON.stringify({ component: "updater" }) })).status, 403);
+  assert.equal((await fetch(`${base}/api/v1/update-flow/install/updater`, { method: "POST", headers: { cookie, "content-type": "application/json" }, body: JSON.stringify({ version: "0.4.0", request_id: "01234567-0123-4123-8123-012345678901" }) })).status, 403);
 
   const restoreForm = new FormData();
   restoreForm.append("file", new Blob([submitted.backup], { type: "application/zip" }), "volt-backup.zip");

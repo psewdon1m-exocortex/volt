@@ -308,14 +308,11 @@ h1, h2, h3, h4, p { margin-top: 0; }
 .backup-version-group .setting-group-content > p { margin: 0 0 12px; color: var(--white-80); }
 .install-component-action { margin-top: 8px; }
 .portable-vault-action { width: auto; }
-.setting-updates { min-height: 566px; }
+.setting-updates { min-height: 0; }
 .setting-updates .setting-content { padding-bottom: 54px; }
 .updates-content .setting-group { padding-top: 27px; }
-.updates-content .setting-group + .setting-group { margin-top: 53px; padding-top: 0; }
 .update-pipeline-group .setting-group-content { margin-top: 8px; }
 .update-pipeline-group .installed-version { margin: 0 0 30px; }
-.updater-version-group .setting-group-content { margin-top: 6px; }
-.updater-version-group .setting-group-content > p { margin: 0 0 12px; color: var(--white-80); }
 .setting-appearance { min-height: 540px; }
 .setting-security { min-height: 0; }
 .setting-security .setting-content { padding-top: 24px; padding-bottom:90px; }
