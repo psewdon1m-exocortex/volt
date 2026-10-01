@@ -10,7 +10,7 @@ Access Key unlock is mandatory. A protected Access Key file is an explicitly sup
 
 ## Trust and operator prerequisites
 
-The selected deployment profile contains Kernel, Volt, Saturn, Updater, Neptune and Gryphon. Per-host helpers are reused when healthy; attaching a service does not silently downgrade or reinstall them. Operator control is available through connected service Settings and typed CLI actions. Jobs retain their identifiers across page reloads and must reach a verified terminal result.
+The selected deployment profile contains Kernel, Volt, Saturn, Updater, Neptune and Gryphon. Per-host agents are reused when healthy; attaching a service does not silently downgrade or reinstall them. Root `sudo updater tui` owns shared-agent release checks and updates. Each service's Settings owns its own Neptune policy and scoped agent bindings. Jobs retain their identifiers across page reloads and must reach a verified terminal result.
 
 Release manifests use detached RSA-PSS-SHA256 signatures with a per-project RSA key of at least 3072 bits. Keep Volt's private key only in GitHub Secrets and expose it only to the protected release-signing job. CI derives the public counterpart and embeds it in Volt's versioned `bootstrap.sh`; bootstrap creates `/etc/exocortex/release-trust/volt.pem`, verifies the manifest before downloading the service, and never replaces an existing mismatching key automatically. No `scp`, manual release-key fingerprint or separately downloaded public key is part of this trust path. Saturn also retains its Ed25519 installer signature. The six-service head bundles require Updater 0.4.3 or newer.
 

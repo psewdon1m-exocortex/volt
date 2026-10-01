@@ -1,5 +1,5 @@
 import { ServiceLogsPanel } from "./ServiceLogsPanel";
-import { openAgentInitialization, type InitializationJob } from "./agent-initialize.js";
+import { openAgentInitialization, confirmAgentAction, type InitializationJob } from "./agent-initialize.js";
 import { BackupPolicyPanel } from "./service-agents";
 import { openVoltUpdates } from "./update-flow";
 import { useCallback, useEffect, useState } from "react";
@@ -117,6 +117,25 @@ export function SettingsPage({ settings, onSettings, onLocked, toast }: { settin
         message: "Both the recovery ZIP and single-file mirror must be enrolled and reachable." };
     },
   });
+
+  const unlinkNeptune = async () => {
+    if (!(["linked", "unlinking"].includes(neptune?.state ?? "")) || !await confirmAgentAction({
+      title: "Unlink Neptune agent", confirmLabel: "Unlink agent",
+      message: "Automatic ZIP and personal.volt backups will stop. Saved data remains in Saturn. Other services and the shared Neptune agent stay connected. Volt will need a new setup code to link again.",
+    })) return;
+    setBusy("neptune-unlink");
+    try {
+      const accepted = await api.unlinkNeptune();
+      for (let attempt = 0; attempt < 600; attempt += 1) {
+        const job = await api.updateJob(accepted.id);
+        if (job.state === "COMPLETED") { setNeptune(await api.neptuneAvailability()); toast("Volt unlinked from Neptune. Automatic backups are off."); return; }
+        if (job.state === "FAILED") throw new Error(job.message || "Neptune unlink failed");
+        await new Promise(resolve => setTimeout(resolve, 1500));
+      }
+      throw new Error("Neptune is still finishing an accepted backup. Check its status before retrying.");
+    } catch (error) { toast(errorMessage(error), "error"); }
+    finally { setBusy(""); }
+  };
 
   async function saveInterface(update: Partial<InterfaceSettings>, success = "Setting saved") {
     const optimistic = { ...settings, ...update };
@@ -272,15 +291,14 @@ export function SettingsPage({ settings, onSettings, onLocked, toast }: { settin
       <SettingGroup className="volt-kernel-group" title="Volt - Kernel secure channel"><div className="kernel-connection-row"><div className="kernel-url channel-endpoint">Volt internal resolver</div><div className="kernel-reachability"><span>Kernel → Volt</span><strong className={kernel?.configured ? "ok-text" : "danger-text"}>{kernel?.configured ? "Token configured" : "Token not configured"}<span className={`status-square${kernel?.configured ? "" : " offline"}`} /></strong></div></div><button className="button secondary wide-kernel-action" onClick={() => { setKernelToken(""); setKernelTokenConfirm(""); setKernelOpen(true); }}>Change VOLT_KERNEL_TOKEN · Kernel → Volt</button></SettingGroup>
     </> },
     backup: { title: "Backup", eyebrow: "BACKUP", description: "Portable container, ZIP snapshot, and Neptune.", content: <div className="backup-content">
-      <SettingGroup title="System snapshot" description="The logical snapshot contains entries, revisions, and settings, but not server device keys."><div className="button-row"><button className="button secondary reference-action" disabled={!!busy} onClick={() => getFile("backup")}><Icon name="download" />Create and download snapshot</button><button className="button secondary portable-vault-action" disabled={!!busy} onClick={() => getFile("vault")}><Icon name="download" />Download personal.volt</button></div></SettingGroup>
-      <SettingGroup title="Restore snapshot" description="The selected archive is verified first; replacement proceeds only after explicit confirmation."><button className="button secondary reference-action" disabled={!!busy} onClick={() => setRestoreOpen(true)}>Browse local snapshot archive</button></SettingGroup>
+      <SettingGroup title="Manual snapshot" description="The logical snapshot contains entries, revisions, and settings, but not server device keys."><div className="button-row"><button className="button secondary reference-action" disabled={!!busy} onClick={() => getFile("backup")}><Icon name="download" />Create and download snapshot</button><button className="button secondary portable-vault-action" disabled={!!busy} onClick={() => getFile("vault")}><Icon name="download" />Download personal.volt</button></div></SettingGroup>
       <SettingGroup className="backup-neptune-group" title="Automatic backup to Saturn" description="Neptune exports the standard ZIP and delivers the dedicated vault mirror independently.">
-        <StatusRow label="Local Neptune agent:" text={!neptune ? "Checking" : neptune.state === "linked" ? "Linked" : neptune.state === "unlinked" ? "Not linked" : neptune.state === "authorization_failed" ? "Authorization failed" : neptune.linked ? "Unavailable · last known linked" : "Unavailable · installation unknown"} ok={neptune?.state === "linked"} />
-        <button className="button secondary reference-action" onClick={initializeNeptune}>Initialize</button>
+        <StatusRow label="Local Neptune agent:" text={!neptune ? "Checking" : neptune.state === "linked" ? "Linked" : neptune.state === "unlinking" ? "Unlinking" : neptune.state === "unlinked" ? "Not linked" : neptune.state === "authorization_failed" ? "Authorization failed" : neptune.linked ? "Unavailable · last known linked" : "Unavailable · installation unknown"} ok={neptune?.state === "linked"} />
         <BackupPolicyPanel service="volt" base="/api/v1/neptune/policy" />
+        {neptune?.state === "linked" || neptune?.linked === true ? <button className="button secondary reference-action backup-unlink-action" type="button" disabled={!!busy || !["linked", "unlinking"].includes(neptune?.state ?? "")} onClick={() => void unlinkNeptune()}>{busy === "neptune-unlink" ? "Unlinking Neptune…" : neptune?.state === "unlinking" ? "Retry Neptune unlink" : "Unlink Neptune agent"}</button>
+          : <button className="button secondary reference-action backup-link-action" type="button" disabled={!neptune || neptune.state === "unavailable" && neptune.linked !== false} onClick={initializeNeptune}>{neptune?.state === "authorization_failed" ? "Repair Neptune connection" : "Link Neptune agent"}</button>}
         </SettingGroup>
-      <SettingGroup title="Neptune version"><p>Current installed version: {neptune?.version ?? "Unavailable"}</p><button className="button secondary reference-action" onClick={() => openVoltUpdates("neptune")}>Check Neptune for updates</button>
-      </SettingGroup>
+      <SettingGroup title="Restore snapshot" description="The selected archive is verified first; replacement proceeds only after explicit confirmation."><button className="button secondary reference-action" disabled={!!busy} onClick={() => setRestoreOpen(true)}>Browse local snapshot archive</button></SettingGroup>
     </div> },
     updates: { title: "Updates", eyebrow: "UPDATES", description: "Local Updater and trusted release registry.", content: <div className="updates-content"><SettingGroup className="update-pipeline-group" title="Update pipeline" description="Release discovery comes from Kernel Register; replacement and rollback are performed by the local Updater."><p className="installed-version">Current installed version: <strong>v{version?.installed_version ?? "…"}</strong></p><StatusRow label="Local Updater agent:" text={version?.updater.reachable ? "Service Reachability" : version?.updater.error ?? "Service Unavailable"} ok={version?.updater.reachable} /><StatusRow label="Kernel Register:" text={kernel?.reachable ? "Service Reachability" : kernel?.error ?? "Service Unavailable"} ok={kernel?.reachable} /><button className="button secondary reference-action update-action" disabled={!!busy} onClick={() => openVoltUpdates()}>Check for updates</button></SettingGroup></div> },
     logs: { title: "Logs", eyebrow: "LOGS", description: "Operational events without secret contents.", content: <ServiceLogsPanel base="/api/v1/audit" download="/api/v1/logs/archive" /> },

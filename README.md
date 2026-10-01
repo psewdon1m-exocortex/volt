@@ -40,7 +40,7 @@ credentials`. Вручную задаются только Access Key и уда�
 
 После установки можно создать в Saturn pipeline **Volt ZIP + personal.volt
 mirror**. Введите setup code через Settings → Backup
-→ **Initialize Neptune**: Updater установит отсутствующий Neptune или подключит уже работающий экземпляр. `sudo volt-install backup` остаётся резервным
+→ **Initialize Neptune**: Updater подключит профиль Volt к уже установленному агенту; отсутствующий агент на старом или повреждённом хосте восстанавливают через установщик или `sudo updater tui`. `sudo volt-install backup` остаётся резервным
 CLI-сценарием. Расписания задаются только в Saturn → Synchronization.
 
 ## Что реализовано
@@ -233,8 +233,11 @@ Settings позволяет скачать согласованный snapshot `
 Поэтому ручной ZIP и ZIP, отправленный автоматически в Saturn, полностью
 взаимозаменяемы. Settings показывает локальный статус Neptune и позволяет
 инициализировать или восстановить обязательную пару pipeline: recovery ZIP и
-single-file mirror `personal.volt`. Расписания, явные remote runs и fleet update
-задаются только в Saturn → Synchronization. Для регистрации archive worker
+single-file mirror `personal.volt`. Один переключатель и один часовой интервал
+в Settings Volt атомарно задают политику для обоих pipeline; ручного удалённого
+запуска нет. Saturn → Synchronization управляет identity, quota, setup code и
+наблюдением, а релиз Neptune проверяют и устанавливают через `sudo updater tui`.
+Для регистрации archive worker
 используются `project_id=volt`, exporter
 `http://127.0.0.1:18184/api/v1/internal/neptune/backup` и Register key
 `services.volt.backup.saturn_slug`; mirror worker отдельно использует
@@ -257,8 +260,9 @@ The current six-service deployment, trust, recovery and acceptance contract is d
 
 See [Update protocol, saved ZIP and first migration](docs/UPDATE-PROTOCOL.md).
 The UI uses Updater **0.5.0**, an exact selected version, the standard ZIP saved
-on the operator PC, and durable status/progress. Helper updates use the same
-dialog without a backup. No update ZIP is retained on the application host.
+on the operator PC, and durable status/progress for Volt releases. Shared
+Updater, Neptune, Gryphon and Wyvern release operations use `sudo updater tui`
+on the host. No update ZIP is retained on the application host.
 
 Release builds pin the published Updater 0.5.0 installer by the SHA-256 in
 `.release/updater.sha256` and verify it before extraction. This digest was

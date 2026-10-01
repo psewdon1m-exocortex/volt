@@ -57,7 +57,8 @@ export function createNeptuneClient({ socketPath, projectId, controlTokenFile })
       try {
         const health = await request(socketPath, "", "", "GET", "/v1/health", null, 3_000);
         try {
-          lastKnown = { installed: true, linked: true, state: "linked", ...(await this.status()),
+          const status = await this.status();
+          lastKnown = { installed: true, linked: true, ...status, state: status.project?.unlinking ? "unlinking" : "linked",
             policy_protocol: health.policy_protocol ?? 0, last_verified_at: new Date().toISOString() };
           return lastKnown;
         } catch (error) {

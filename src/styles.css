@@ -622,3 +622,15 @@ h1, h2, h3, h4, p { margin-top: 0; }
 
 :is(.backup-content,.bot-connection-groups) > .settings-group { padding-top: 0; }
 :is(.backup-content,.bot-connection-groups) { gap: 40px; }
+/* Backup reference: manual export, agent schedule, then restore. */
+:root .setting-backup .backup-content { gap:54px; }
+.setting-backup .setting-content { padding-top:28px; }
+.setting-backup .backup-content > .setting-group { margin:0; padding:0; }
+.setting-backup .backup-content .setting-group-content { margin-top:20px; }
+.setting-backup .backup-content > .setting-group:first-child .button-row { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:clamp(16px,3vw,54px); }
+.setting-backup .backup-content > .setting-group:first-child .button-row > button { width:100%; }
+.setting-backup .backup-content > .setting-group:last-child .reference-action { width:min(742px,100%); }
+.setting-backup .backup-neptune-group .exo-backup-policy { margin-top:10px; }
+.setting-backup .backup-neptune-group :is(.backup-link-action,.backup-unlink-action) { width:280px; margin-top:20px; }
+.setting-backup .backup-unlink-action:disabled { color:var(--danger) !important; border-color:var(--danger) !important; opacity:1; }
+@media(max-width:720px) { .setting-backup .backup-content > .setting-group:first-child .button-row { grid-template-columns:minmax(0,1fr); } }

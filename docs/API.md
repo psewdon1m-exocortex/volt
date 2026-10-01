@@ -37,7 +37,8 @@ mutation policy. Machine endpoint принимает только общий Bea
 | `POST` | `/api/v1/update/install` | Backup и запуск проверенной установки через локальный Updater |
 | `GET` | `/api/v1/update/jobs/:id` | Состояние сохранённого updater job |
 | `POST` | `/api/v1/update/jobs/:id/rollback` | Ручной rollback завершённого обновления |
-| `POST` | `/api/v1/update/updater/check` | Проверка `repositories.updater.url` |
+| `POST` | `/api/v1/update/updater/check` | Устаревший маршрут, возвращает 403; проверка Updater только через `sudo updater tui` |
+| `POST` | `/api/v1/update/updater/install` | Устаревший маршрут, возвращает 403; обновление Updater только через `sudo updater tui` |
 | `GET` | `/api/v1/logs/archive` | ZIP с redacted audit в JSONL |
 | `GET` | `/api/v1/vault-file` | Согласованный переносимый `personal.volt` snapshot |
 | `GET` | `/api/v1/vault-file/info` | Версия формата, vault ID и параметры KDF без секретов |

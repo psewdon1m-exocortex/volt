@@ -210,6 +210,10 @@ test("Neptune exports the exact manual archive format and keeps controls behind 
   const response = await fetch(`${base}/api/v1/neptune/schedule`, { method: "PUT", headers: { cookie, "content-type": "application/json" }, body: JSON.stringify({ enabled: true, interval_hours: 6 }) });
   assert.equal(response.status, 426);
   assert.equal(scheduled, null);
+  for (const route of ["/api/v1/neptune/policy/runs", "/api/v1/neptune/update/check", "/api/v1/neptune/update/install"])
+    assert.equal((await fetch(`${base}${route}`, { method: "POST", headers: { cookie, "content-type": "application/json" }, body: "{}" })).status, 403);
+  assert.equal((await fetch(`${base}/api/v1/update-flow/check`, { method: "POST", headers: { cookie, "content-type": "application/json" }, body: JSON.stringify({ component: "neptune" }) })).status, 403);
+  assert.equal((await fetch(`${base}/api/v1/update-flow/install/neptune`, { method: "POST", headers: { cookie, "content-type": "application/json" }, body: "{}" })).status, 403);
 });
 
 test("Volt initialization proxies and verifies the dual Neptune pipeline job", async (context) => {

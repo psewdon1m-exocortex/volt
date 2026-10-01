@@ -33,16 +33,10 @@ export type NeptuneStatus = {
   };
 };
 
-export type NeptuneUpdate = {
-  installed_version: string;
-  available_version?: string | null;
-  update_available: boolean;
-};
-
 export type NeptuneAvailability = Partial<NeptuneStatus> & {
   installed: boolean | null;
   linked: boolean | null;
-  state: "linked" | "unlinked" | "unavailable" | "authorization_failed";
+  state: "linked" | "unlinking" | "unlinked" | "unavailable" | "authorization_failed";
   version?: string | null;
 };
 
@@ -223,9 +217,6 @@ export const api = {
   neptuneStatus: () => request<NeptuneStatus>("/api/v1/neptune/status"),
   neptuneAvailability: () => request<NeptuneAvailability>("/api/v1/neptune/availability"),
   initializeNeptune: (enrollmentCode: string, requestId?: string) => request<NeptuneInitializationJob>("/api/v1/neptune/initialize", { method: "POST", body: JSON.stringify({ enrollment_code: enrollmentCode, request_id: requestId }) }),
+  unlinkNeptune: () => request<{ id: string }>("/api/v1/neptune/unlink", { method: "POST", body: "{}" }),
   neptuneInitialization: (jobId: string) => request<NeptuneInitializationJob>(`/api/v1/neptune/initializations/${encodeURIComponent(jobId)}`),
-  neptuneSchedule: (enabled: boolean, intervalHours: number) => request<void>("/api/v1/neptune/schedule", { method: "PUT", body: JSON.stringify({ enabled, interval_hours: intervalHours }) }),
-  neptuneRun: () => request<void>("/api/v1/neptune/runs", { method: "POST", body: "{}" }),
-  neptuneCheckUpdate: () => request<NeptuneUpdate>("/api/v1/neptune/update/check", { method: "POST", body: "{}" }),
-  neptuneInstallUpdate: (version: string) => request<void>("/api/v1/neptune/update/install", { method: "POST", body: JSON.stringify({ version }) }),
 };

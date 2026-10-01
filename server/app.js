@@ -711,7 +711,7 @@ export function createApp({
   app.get("/api/v1/neptune/policy", async (_req, res) => res.json(await backupPolicy.read()));
   app.put("/api/v1/neptune/policy", requireSameOrigin, async (req, res) => res.json(await backupPolicy.mutate(req.body)));
   app.get("/api/v1/neptune/policy/runs", async (_req, res) => res.json(await backupPolicy.runs()));
-  app.post("/api/v1/neptune/policy/runs", requireSameOrigin, async (req, res) => res.status(202).json(await backupPolicy.runs("POST", req.body)));
+  app.post("/api/v1/neptune/policy/runs", requireSameOrigin, (_req, res) => res.status(403).json({ message: "Manual Neptune runs are unavailable; configure the automatic schedule in Settings" }));
   app.post("/api/v1/neptune/initialize", requireSameOrigin, async (request, response, next) => {
     try {
       const code = String(request.body?.enrollment_code ?? "").trim();
@@ -736,22 +736,19 @@ export function createApp({
   app.post("/api/v1/neptune/runs", requireSameOrigin, (_req, res) => {
     res.status(426).json({ message: "Use the scoped policy run endpoint with a stable request ID" });
   });
-  app.post("/api/v1/neptune/update/check", requireSameOrigin, async (_request, response, next) => {
+  app.post("/api/v1/neptune/update/check", requireSameOrigin, (_request, response) => {
+    response.status(403).json({ message: "Check Neptune releases with sudo updater tui on the host" });
+  });
+  app.post("/api/v1/neptune/unlink", requireSameOrigin, async (request, response, next) => {
     try {
-      const status = await neptuneClient.status();
-      response.json(await updaterClient.checkNeptune(status.version));
+      if (!updaterClient) throw domainError(503, "UPDATER_NOT_CONFIGURED", "Updater is not configured");
+      const job = await updaterClient.unlinkNeptune(request.body?.request_id);
+      store.audit({ actor: "operator", action: "neptune.unlink", target: String(job.id ?? "accepted") });
+      response.status(202).json(job);
     } catch (error) { next(error); }
   });
-  app.post("/api/v1/neptune/update/install", requireSameOrigin, async (request, response, next) => {
-    try {
-      const requested = String(request.body?.version ?? "");
-      const status = await neptuneClient.status();
-      const candidate = await updaterClient.checkNeptune(status.version);
-      if (!candidate.update_available || candidate.available_version !== requested) {
-        throw domainError(409, "NEPTUNE_UPDATE_CHANGED", "Requested Neptune version is not the current upgrade candidate");
-      }
-      response.json(await updaterClient.updateNeptune(requested));
-    } catch (error) { next(error); }
+  app.post("/api/v1/neptune/update/install", requireSameOrigin, (_request, response) => {
+    response.status(403).json({ message: "Update Neptune with sudo updater tui on the host" });
   });
 
   app.get("/api/v1/vault-file", (_request, response, next) => {
