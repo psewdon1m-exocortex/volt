@@ -79,13 +79,13 @@ dialog.exo-initialize:not(.laboratory) > header h2 { font: 700 24px/29px Consola
 :root :is(.exo-backup-policy,.exo-wyvern-connection) button:enabled:active { transform: scale(.985); transition-duration: 60ms; }
 @media (prefers-reduced-motion: reduce) { :root :is(.exo-backup-policy,.exo-wyvern-connection) button { transition: none; } :root :is(.exo-backup-policy,.exo-wyvern-connection) button:enabled:active { transform: none; } }
 /* Backup card reference: pipeline rows precede the single schedule control. */
-:root .exo-backup-policy .exo-policy-statuses { display:grid; gap:10px; }
+:root .exo-backup-policy .exo-policy-statuses { display:grid; gap:12px; }
 :root .exo-backup-policy .exo-policy-statuses [hidden] { display:none; }
 :root .exo-backup-policy .exo-policy-status strong { text-align:right; overflow-wrap:anywhere; }
 :root .exo-backup-policy .exo-agent-group,
 :root .exo-backup-policy .exo-agent-group + .exo-agent-group { margin-top:0; }
-:root .exo-backup-policy .exo-policy-controls { grid-template-columns:minmax(0,1fr); gap:8px; }
-:root .exo-backup-policy .exo-policy-toggle { min-height:24px; }
+:root .exo-backup-policy .exo-policy-controls { grid-template-columns:minmax(0,342px); gap:12px; }
+:root .exo-backup-policy .exo-policy-toggle { min-height:40px; }
 :root .exo-backup-policy .exo-policy-interval { display:flex; align-items:center; gap:12px; }
-:root .exo-backup-policy .exo-policy-interval input { width:57px; min-width:57px; height:28px; min-height:28px; }
+:root .exo-backup-policy .exo-policy-interval input { width:80px; min-width:80px; height:40px; min-height:40px; }
 @media(pointer:coarse) { :root .exo-backup-policy .exo-policy-toggle, :root .exo-backup-policy .exo-policy-interval input { min-height:44px; } }

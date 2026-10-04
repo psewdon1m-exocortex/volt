@@ -287,8 +287,8 @@ h1, h2, h3, h4, p { margin-top: 0; }
 .status-row strong { max-width: 70%; text-align: right; overflow-wrap: anywhere; }
 .status-row strong:has(.status-square) { display: inline-flex; align-items: center; justify-content: flex-end; gap: 14px; }
 .status-row .status-square { width: 18px; height: 18px; flex: 0 0 18px; }
-.setting-backup { min-height: 782px; }
-.setting-backup .setting-content { padding-bottom: 50px; }
+.setting-backup { min-height: 0; }
+.setting-backup .setting-content { padding-bottom: 44px; }
 .backup-content .setting-group:first-child { padding-top: 27px; }
 .backup-content .setting-group + .setting-group { margin-top: 38px; padding-top: 0; }
 .backup-content .backup-neptune-group { margin-top: 40px; }
@@ -624,14 +624,18 @@ h1, h2, h3, h4, p { margin-top: 0; }
 :is(.backup-content,.bot-connection-groups) > .settings-group { padding-top: 0; }
 :is(.backup-content,.bot-connection-groups) { gap: 40px; }
 /* Backup reference: manual export, agent schedule, then restore. */
-:root .setting-backup .backup-content { gap:54px; }
+:root .setting-backup .backup-content { display:grid; gap:44px; }
 .setting-backup .setting-content { padding-top:28px; }
 .setting-backup .backup-content > .setting-group { margin:0; padding:0; }
 .setting-backup .backup-content .setting-group-content { margin-top:20px; }
-.setting-backup .backup-content > .setting-group:first-child .button-row { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:clamp(16px,3vw,54px); }
+.setting-backup .backup-content > .setting-group:first-child .button-row,
+.setting-backup .restore-action-grid { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:20px; }
 .setting-backup .backup-content > .setting-group:first-child .button-row > button { width:100%; }
-.setting-backup .backup-content > .setting-group:last-child .reference-action { width:min(742px,100%); }
-.setting-backup .backup-neptune-group .exo-backup-policy { margin-top:10px; }
+.setting-backup .restore-action-grid > button { width:100%; min-height:40px; }
+.setting-backup .backup-neptune-group .exo-backup-policy { margin-top:12px; }
 .setting-backup .backup-neptune-group :is(.backup-link-action,.backup-unlink-action) { width:280px; margin-top:20px; }
 .setting-backup .backup-unlink-action:disabled { color:var(--danger) !important; border-color:var(--danger) !important; opacity:1; }
-@media(max-width:720px) { .setting-backup .backup-content > .setting-group:first-child .button-row { grid-template-columns:minmax(0,1fr); } }
+@media(max-width:720px) {
+  .setting-backup .backup-content > .setting-group:first-child .button-row,
+  .setting-backup .restore-action-grid { grid-template-columns:minmax(0,1fr); }
+}

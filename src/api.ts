@@ -197,6 +197,31 @@ export const api = {
     if (!response.ok) throw new ApiError(response.status, "BACKUP_FAILED", "Could not create backup");
     return { blob: await response.blob(), disposition: response.headers.get("content-disposition") ?? "" };
   },
+  inspectVaultFile: (file: File) => {
+    const form = new FormData();
+    form.append("file", file);
+    return request<{
+      digest: string;
+      filename: string;
+      bytes: number;
+      info: {
+        format: string;
+        format_version: number;
+        current_format_version: number;
+        schema_version: number;
+        vault_id: string;
+        created_at: string;
+        has_device_wrapper: boolean;
+      };
+    }>("/api/v1/vault-file/inspect", { method: "POST", body: form });
+  },
+  restoreVaultFile: (file: File, digest: string, accessKey: string) => {
+    const form = new FormData();
+    form.append("file", file);
+    form.append("digest", digest);
+    form.append("access_key", accessKey);
+    return request<{ restored: boolean }>("/api/v1/vault-file/restore", { method: "POST", body: form });
+  },
   downloadLogs: async () => {
     const response = await fetch("/api/v1/logs/archive", { credentials: "same-origin" });
     if (!response.ok) throw new ApiError(response.status, "LOG_EXPORT_FAILED", "Could not export logs");

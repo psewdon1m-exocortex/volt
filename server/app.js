@@ -26,6 +26,7 @@ import { ShareService } from "./shares.js";
 
 const COOKIE_NAME = "volt_session";
 const SHARE_COOKIE = "volt_share_session";
+const MAX_VAULT_FILE_BYTES = 128 * 1024 * 1024;
 const BLOCKED_PROBE_PATH = /(^|\/)\.|\.(?:env|ini|log|sql|bak|backup|old|swp|zip|tar|gz)$/i;
 
 function apiError(res, error, requestId) {
@@ -171,6 +172,7 @@ export function createApp({
     while (loginAttempts.size >= 2_048) loginAttempts.delete(loginAttempts.keys().next().value);
   }
   const backupUpload = multer({ storage: multer.memoryStorage(), limits: { files: 1, fileSize: MAX_COMPRESSED_BYTES } });
+  const vaultUpload = multer({ storage: multer.memoryStorage(), limits: { files: 1, fileSize: MAX_VAULT_FILE_BYTES } });
 
   app.use((request, response, next) => {
     request.requestId = randomUUID();
@@ -766,6 +768,32 @@ export function createApp({
 
   app.get("/api/v1/vault-file/info", (_request, response, next) => {
     try { response.json(store.getPortableVaultInfo()); } catch (error) { next(error); }
+  });
+
+  app.post("/api/v1/vault-file/inspect", requireSameOrigin, vaultUpload.single("file"), (request, response, next) => {
+    try {
+      if (!request.file) throw domainError(400, "VAULT_FILE_REQUIRED", "Select a personal.volt file");
+      const digest = createHash("sha256").update(request.file.buffer).digest("hex");
+      const info = store.inspectPortableSnapshot(request.file.buffer);
+      store.audit({ actor: "operator", action: "vault.inspect", target: digest, details: { bytes: request.file.size } });
+      response.json({ digest, info, filename: request.file.originalname, bytes: request.file.size });
+    } catch (error) { next(error); }
+  });
+
+  app.post("/api/v1/vault-file/restore", requireSameOrigin, vaultUpload.single("file"), (request, response, next) => {
+    try {
+      if (!request.file) throw domainError(400, "VAULT_FILE_REQUIRED", "Select a personal.volt file");
+      const digest = createHash("sha256").update(request.file.buffer).digest("hex");
+      if (request.body?.digest !== digest) {
+        throw domainError(409, "VAULT_FILE_CHANGED", "The personal.volt file differs from the inspected file");
+      }
+      const result = store.restorePortableSnapshot(request.file.buffer, {
+        accessKey: request.body?.access_key,
+        digest,
+      });
+      response.clearCookie(COOKIE_NAME, { httpOnly: true, sameSite: "strict", secure: secureCookies, path: "/" });
+      response.json({ restored: true, ...result });
+    } catch (error) { next(error); }
   });
 
   app.get("/api/v1/backup", async (_request, response, next) => {

@@ -59,6 +59,12 @@ function domainError(status, code, message) {
   return error;
 }
 
+function removeSqliteFamily(filename) {
+  for (const suffix of ["", "-wal", "-shm"]) {
+    try { unlinkSync(`${filename}${suffix}`); } catch {}
+  }
+}
+
 function parseJson(value, fallback = null) {
   try {
     return JSON.parse(value);
@@ -329,6 +335,65 @@ export class VoltStore {
       return readFileSync(temporary);
     } finally {
       try { unlinkSync(temporary); } catch {}
+    }
+  }
+
+  inspectPortableSnapshot(snapshot) {
+    if (!Buffer.isBuffer(snapshot) || snapshot.length === 0) {
+      throw domainError(400, "VAULT_FILE_REQUIRED", "Select a non-empty personal.volt file");
+    }
+    const temporary = `${this.filename}.inspect-${randomUUID()}`;
+    try {
+      writeFileSync(temporary, snapshot, { mode: 0o600, flag: "wx" });
+      return portableVaultInfo(temporary);
+    } catch (error) {
+      if (error.status) throw error;
+      throw domainError(400, "VAULT_FILE_INVALID", "The selected file is not a supported personal.volt vault");
+    } finally {
+      removeSqliteFamily(temporary);
+    }
+  }
+
+  restorePortableSnapshot(snapshot, { accessKey, actor = "operator", digest = null } = {}) {
+    if (!Buffer.isBuffer(snapshot) || snapshot.length === 0) {
+      throw domainError(400, "VAULT_FILE_REQUIRED", "Select a non-empty personal.volt file");
+    }
+    if (typeof accessKey !== "string" || accessKey.length === 0) {
+      throw domainError(400, "VAULT_ACCESS_KEY_REQUIRED", "Enter the Access Key for the selected personal.volt file");
+    }
+    const temporary = `${this.filename}.restore-vault-${randomUUID()}`;
+    let sourceMasterKey;
+    let sourceStore;
+    try {
+      writeFileSync(temporary, snapshot, { mode: 0o600, flag: "wx" });
+      try {
+        sourceMasterKey = unlockPortableVault({ filename: temporary, accessKey }).masterKey;
+      } catch {
+        throw domainError(400, "VAULT_UNLOCK_FAILED", "The Access Key is incorrect or the selected personal.volt file is damaged");
+      }
+      try {
+        sourceStore = new VoltStore({ filename: temporary, masterKey: sourceMasterKey, auditRetention: this.auditRetention });
+        const exported = sourceStore.exportLogicalState();
+        sourceStore.close();
+        sourceStore = null;
+        const state = {
+          ...exported,
+          backup_policy: null,
+          entries: exported.entries.map((row) => rewrapEntryKey(sourceMasterKey, this.masterKey, row.id, row)),
+        };
+        return this.importLogicalState(state, {
+          actor,
+          archiveDigest: digest,
+          auditAction: "vault.restore",
+        });
+      } catch (error) {
+        if (error.status) throw error;
+        throw domainError(400, "VAULT_RESTORE_INVALID", "The selected personal.volt data failed validation");
+      }
+    } finally {
+      try { sourceStore?.close(); } catch {}
+      sourceMasterKey?.fill(0);
+      removeSqliteFamily(temporary);
     }
   }
 
@@ -927,7 +992,7 @@ export class VoltStore {
     }
   }
 
-  importLogicalState(state, { actor = "operator", archiveDigest = null } = {}) {
+  importLogicalState(state, { actor = "operator", archiveDigest = null, auditAction = "backup.restore" } = {}) {
     const policy = restoredPolicyRecord(state.backup_policy);
     const preservedAccessKeyHash = this.getSetting("access_key_hash");
     const preservedKernelTokenHash = this.getSetting("kernel_token_hash");
@@ -1003,7 +1068,7 @@ export class VoltStore {
       if (error.code) throw error;
       throw domainError(400, "BACKUP_RESTORE_FAILED", "Backup restore was rolled back");
     }
-    this.audit({ actor, action: "backup.restore", target: archiveDigest, details: { restore_mode: "replace", entry_count: state.entries.length } });
+    this.audit({ actor, action: auditAction, target: archiveDigest, details: { restore_mode: "replace", entry_count: state.entries.length } });
     return this.getStats();
   }
 }

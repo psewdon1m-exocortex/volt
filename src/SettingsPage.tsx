@@ -68,6 +68,11 @@ export function SettingsPage({ settings, onSettings, onLocked, toast }: { settin
   const [restorePhrase, setRestorePhrase] = useState("");
   const [restoreKey, setRestoreKey] = useState("");
   const [restoreOpen, setRestoreOpen] = useState(false);
+  const [vaultRestoreFile, setVaultRestoreFile] = useState<File | null>(null);
+  const [vaultInspection, setVaultInspection] = useState<Awaited<ReturnType<typeof api.inspectVaultFile>> | null>(null);
+  const [vaultRestorePhrase, setVaultRestorePhrase] = useState("");
+  const [vaultRestoreKey, setVaultRestoreKey] = useState("");
+  const [vaultRestoreOpen, setVaultRestoreOpen] = useState(false);
   const [version, setVersion] = useState<Awaited<ReturnType<typeof api.updateStatus>> | null>(null);
   const [neptune, setNeptune] = useState<NeptuneAvailability | null>(null);
   const [busy, setBusy] = useState("");
@@ -97,6 +102,7 @@ export function SettingsPage({ settings, onSettings, onLocked, toast }: { settin
   function closeKernel() { setKernelOpen(false); setKernelToken(""); setKernelTokenConfirm(""); }
   function closeKernelService() { setKernelServiceOpen(false); setKernelServiceToken(""); setKernelServiceConfirm(""); }
   function closeRestore() { setRestoreOpen(false); setInspection(null); setRestoreFile(null); setRestorePhrase(""); setRestoreKey(""); }
+  function closeVaultRestore() { setVaultRestoreOpen(false); setVaultInspection(null); setVaultRestoreFile(null); setVaultRestorePhrase(""); setVaultRestoreKey(""); }
   const initializeNeptune = () => openAgentInitialization({
     component: "Neptune", service: "volt",
     description: "Connect this service to the local Neptune agent. An existing agent is reused.",
@@ -258,6 +264,33 @@ export function SettingsPage({ settings, onSettings, onLocked, toast }: { settin
     finally { setBusy(""); }
   }
 
+  async function inspectVault(file: File | null) {
+    if (!file) return;
+    setBusy("vault-restore");
+    try {
+      setVaultRestoreFile(file);
+      setVaultInspection(await api.inspectVaultFile(file));
+      setVaultRestorePhrase("");
+      setVaultRestoreKey("");
+    } catch (error) {
+      setVaultRestoreFile(null);
+      setVaultInspection(null);
+      toast(errorMessage(error), "error");
+    } finally { setBusy(""); }
+  }
+
+  async function restoreVault() {
+    if (!vaultRestoreFile || !vaultInspection || !vaultRestoreKey || vaultRestorePhrase !== "RESTORE") return;
+    setBusy("vault-restore");
+    try {
+      await api.restoreVaultFile(vaultRestoreFile, vaultInspection.digest, vaultRestoreKey);
+      setVaultRestoreKey("");
+      toast("personal.volt restored");
+      onLocked();
+    } catch (error) { toast(errorMessage(error), "error"); }
+    finally { setBusy(""); }
+  }
+
   async function reorder(index: number, direction: -1 | 1) {
     const order = moveItem(settings.settings_order, index, direction);
     if (order !== settings.settings_order) await saveInterface({ settings_order: order }, `Settings order saved: position ${index + direction + 1}`);
@@ -298,7 +331,7 @@ export function SettingsPage({ settings, onSettings, onLocked, toast }: { settin
         {neptune?.state === "linked" || neptune?.linked === true ? <button className="button secondary reference-action backup-unlink-action" type="button" disabled={!!busy || !["linked", "unlinking"].includes(neptune?.state ?? "")} onClick={() => void unlinkNeptune()}>{busy === "neptune-unlink" ? "Unlinking Neptune…" : neptune?.state === "unlinking" ? "Retry Neptune unlink" : "Unlink Neptune agent"}</button>
           : <button className="button secondary reference-action backup-link-action" type="button" disabled={!neptune || neptune.state === "unavailable" && neptune.linked !== false} onClick={initializeNeptune}>{neptune?.state === "authorization_failed" ? "Repair Neptune connection" : "Link Neptune agent"}</button>}
         </SettingGroup>
-      <SettingGroup title="Restore snapshot" description="The selected archive is verified first; replacement proceeds only after explicit confirmation."><button className="button secondary reference-action" disabled={!!busy} onClick={() => setRestoreOpen(true)}>Browse local snapshot archive</button></SettingGroup>
+      <SettingGroup className="backup-restore-group" title="Restore local backup" description="Choose a logical ZIP snapshot or a portable personal.volt. The selected file is verified before replacement."><div className="restore-action-grid"><button className="button secondary" disabled={!!busy} onClick={() => setRestoreOpen(true)}>Restore ZIP snapshot</button><button className="button secondary" disabled={!!busy} onClick={() => setVaultRestoreOpen(true)}>Restore personal.volt</button></div></SettingGroup>
     </div> },
     updates: { title: "Updates", eyebrow: "UPDATES", description: "Local Updater and trusted release registry.", content: <div className="updates-content"><SettingGroup className="update-pipeline-group" title="Update pipeline" description="Release discovery comes from Kernel Register; replacement and rollback are performed by the local Updater."><p className="installed-version">Current installed version: <strong>v{version?.installed_version ?? "…"}</strong></p><StatusRow label="Local Updater agent:" text={version?.updater.reachable ? "Service Reachability" : version?.updater.error ?? "Service Unavailable"} ok={version?.updater.reachable} /><StatusRow label="Kernel Register:" text={kernel?.reachable ? "Service Reachability" : kernel?.error ?? "Service Unavailable"} ok={kernel?.reachable} /><button className="button secondary reference-action update-action" disabled={!!busy} onClick={() => openVoltUpdates()}>Check for updates</button></SettingGroup></div> },
     logs: { title: "Logs", eyebrow: "LOGS", description: "Operational events without secret contents.", content: <ServiceLogsPanel base="/api/v1/audit" download="/api/v1/logs/archive" /> },
@@ -321,6 +354,8 @@ export function SettingsPage({ settings, onSettings, onLocked, toast }: { settin
     {trashConfirmOpen && trashSettings && <ConfirmDialog title="Shorten trash retention?" body={<p>Entities deleted more than {trashRetentionInput} {Number(trashRetentionInput) === 1 ? "day" : "days"} ago will be permanently erased immediately. This cannot be undone.</p>} confirmLabel="Save and delete expired" busy={busy === "trash-retention"} danger onClose={() => { if (busy !== "trash-retention") setTrashConfirmOpen(false); }} onConfirm={() => void commitTrashRetention(Number(trashRetentionInput))} />}
 
     {restoreOpen && <Modal title="Restore Volt" eyebrow="REPLACE RESTORE" className="narrow" dirty={Boolean(restoreFile)} onClose={closeRestore} footer={<><button className="button ghost" onClick={closeRestore}>Cancel</button><button className="button danger-button" disabled={busy === "restore" || !inspection || restorePhrase !== "RESTORE"} onClick={restore}>{busy === "restore" ? "Restoring…" : "Replace state"}</button></>}><div className="modal-body restore-body"><p>Select a trusted ZIP snapshot. After verification, all local entries, revisions, settings, and audit events will be replaced, and operator sessions will be closed. A completed restore cannot be undone; the previous state can only be recovered from a separate backup created beforehand.</p><label className="button secondary file-button align-start">Select ZIP<input data-autofocus type="file" accept=".zip,application/zip" onChange={(event) => inspect(event.target.files?.[0] ?? null)} /></label>{inspection && <><dl><div><dt>File</dt><dd>{inspection.filename}</dd></div><div><dt>Size</dt><dd>{inspection.bytes.toLocaleString("en-US")} bytes</dd></div><div><dt>Created</dt><dd>{formatDate(inspection.manifest.created_at)}</dd></div><div><dt>Version</dt><dd>{inspection.manifest.source_version}</dd></div><div><dt>Entries</dt><dd>{inspection.manifest.files["data/entries.jsonl"]?.records ?? 0}</dd></div></dl><label className="control-label">Archive Access Key (required when recovering into a new vault)<input type="password" autoComplete="off" value={restoreKey} onChange={(event) => setRestoreKey(event.target.value)} /></label><label className="control-label">Enter RESTORE<input value={restorePhrase} onChange={(event) => setRestorePhrase(event.target.value)} /></label></>}</div></Modal>}
+
+    {vaultRestoreOpen && <Modal title="Restore personal.volt" eyebrow="REPLACE RESTORE" className="narrow" dirty={Boolean(vaultRestoreFile)} onClose={closeVaultRestore} footer={<><button className="button ghost" onClick={closeVaultRestore}>Cancel</button><button className="button danger-button" disabled={busy === "vault-restore" || !vaultInspection || !vaultRestoreKey || vaultRestorePhrase !== "RESTORE"} onClick={restoreVault}>{busy === "vault-restore" ? "Restoring…" : "Replace state"}</button></>}><div className="modal-body restore-body"><p>Select a trusted personal.volt file. After verification and unlock, its entries, revisions, user settings, and audit events replace the current local state. The current server Access Key and service tokens remain unchanged; all operator sessions and Shared links are closed.</p><label className="button secondary file-button align-start">Select personal.volt<input data-autofocus type="file" accept=".volt,application/vnd.exocortex.volt,application/x-sqlite3,application/octet-stream" onChange={(event) => inspectVault(event.target.files?.[0] ?? null)} /></label>{vaultInspection && <><dl><div><dt>File</dt><dd>{vaultInspection.filename}</dd></div><div><dt>Size</dt><dd>{vaultInspection.bytes.toLocaleString("en-US")} bytes</dd></div><div><dt>Created</dt><dd>{formatDate(vaultInspection.info.created_at)}</dd></div><div><dt>Format</dt><dd>personal.volt v{vaultInspection.info.format_version}</dd></div><div><dt>Schema</dt><dd>{vaultInspection.info.schema_version}</dd></div></dl><label className="control-label">Access Key for this personal.volt<input type="password" required autoComplete="off" value={vaultRestoreKey} onChange={(event) => setVaultRestoreKey(event.target.value)} /></label><label className="control-label">Enter RESTORE<input value={vaultRestorePhrase} onChange={(event) => setVaultRestorePhrase(event.target.value)} /></label></>}</div></Modal>}
 
 
   </>;

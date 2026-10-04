@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { randomBytes } from "node:crypto";
+import { randomBytes, randomUUID } from "node:crypto";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -503,4 +503,71 @@ test("operator and machine APIs keep list responses masked", async (context) => 
   assert.deepEqual(await changedWithoutFileSync.json(), { changed: true, startup_key_updated: false });
   assert.equal(readFileSync(accessKeyFilename, "utf8"), "k");
   assert.equal(unlockPortableVault({ filename: portable.filename, accessKey: "next-key-with-read-only-startup-file" }).unlockedWith, "access-key");
+});
+
+test("operator can inspect and restore a standalone personal.volt without changing the server Access Key", async (context) => {
+  const directory = mkdtempSync(path.join(os.tmpdir(), "volt-vault-restore-api-"));
+  const sourceKey = "source vault exact key";
+  const currentKey = "current server exact key";
+  const sourceVault = createPortableVault({ filename: path.join(directory, "source.volt"), accessKey: sourceKey });
+  const source = new VoltStore(sourceVault);
+  const restoredEntry = source.createEntry({
+    schema: 1,
+    title: "Restored through API",
+    projects: ["recovery"],
+    fields: [{ id: randomUUID(), key: "secret", value: "restored-api-secret", visibility: "secret", generator: null }],
+  });
+  source.setSetting("trash_retention_days", "73");
+  const sourceBytes = source.createPortableSnapshot();
+  source.close();
+
+  const targetVault = createPortableVault({ filename: path.join(directory, "target.volt"), accessKey: currentKey });
+  const store = new VoltStore(targetVault);
+  store.createEntry({ schema: 1, title: "Replace me", projects: [], fields: [{ id: randomUUID(), key: "old", value: "old", visibility: "secret", generator: null }] });
+  const app = createApp({ store, sessionKey: deriveSessionKey(targetVault.masterKey), accessKey: currentKey });
+  const server = app.listen(0, "127.0.0.1");
+  await new Promise((resolve) => server.once("listening", resolve));
+  const base = `http://127.0.0.1:${server.address().port}`;
+  context.after(async () => {
+    await new Promise((resolve) => server.close(resolve));
+    store.close();
+    rmSync(directory, { recursive: true, force: true });
+  });
+
+  const login = async (accessKey) => fetch(`${base}/api/v1/session`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ access_key: accessKey }),
+  });
+  const unlocked = await login(currentKey);
+  const cookie = unlocked.headers.getSetCookie()[0].split(";")[0];
+  const upload = () => new Blob([sourceBytes], { type: "application/vnd.exocortex.volt" });
+  const inspectForm = new FormData();
+  inspectForm.append("file", upload(), "personal.volt");
+  const inspectedResponse = await fetch(`${base}/api/v1/vault-file/inspect`, { method: "POST", headers: { cookie }, body: inspectForm });
+  const inspected = await inspectedResponse.json();
+  assert.equal(inspectedResponse.status, 200);
+  assert.equal(inspected.info.format, "exocortex-personal-volt");
+  assert.equal(inspected.info.vault_id, sourceVault.vaultId);
+
+  const wrongKeyForm = new FormData();
+  wrongKeyForm.append("file", upload(), "personal.volt");
+  wrongKeyForm.append("digest", inspected.digest);
+  wrongKeyForm.append("access_key", "wrong key");
+  const wrongKey = await fetch(`${base}/api/v1/vault-file/restore`, { method: "POST", headers: { cookie }, body: wrongKeyForm });
+  assert.equal(wrongKey.status, 400);
+  assert.equal(store.getStats().entries, 1);
+
+  const restoreForm = new FormData();
+  restoreForm.append("file", upload(), "personal.volt");
+  restoreForm.append("digest", inspected.digest);
+  restoreForm.append("access_key", sourceKey);
+  const restored = await fetch(`${base}/api/v1/vault-file/restore`, { method: "POST", headers: { cookie }, body: restoreForm });
+  assert.equal(restored.status, 200);
+  assert.equal((await restored.json()).restored, true);
+  assert.equal(store.revealField(restoredEntry.id, restoredEntry.fields[0].id).value, "restored-api-secret");
+  assert.equal(store.getSetting("trash_retention_days"), "73");
+  assert.equal((await fetch(`${base}/api/v1/entries`, { headers: { cookie } })).status, 401);
+  assert.equal((await login(sourceKey)).status, 401);
+  assert.equal((await login(currentKey)).status, 200);
 });

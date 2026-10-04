@@ -48,3 +48,47 @@ test("a device key cannot unlock the default strict profile", () => {
     assert.equal(unlockPortableVault({ filename, deviceKey, accessKey }).unlockedWith, "access-key");
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });
+
+test("a standalone personal.volt replaces recoverable state without replacing the current server Access Key", () => {
+  const dir = mkdtempSync(path.join(os.tmpdir(), "volt-portable-restore-"));
+  const sourceKey = "source portable Access Key";
+  const currentKey = "current server Access Key";
+  const stores = [];
+  try {
+    const sourceVault = createPortableVault({ filename: path.join(dir, "source.volt"), accessKey: sourceKey });
+    const source = new VoltStore(sourceVault); stores.push(source);
+    const restoredEntry = source.createEntry({
+      schema: 1,
+      title: "Portable recovery",
+      projects: ["recovery"],
+      fields: [{ id: randomUUID(), key: "password", value: "portable-recovery-secret", visibility: "secret", generator: null }],
+    });
+    source.setSetting("trash_retention_days", "61");
+    const snapshot = source.createPortableSnapshot();
+    source.close(); stores.pop();
+
+    const targetVault = createPortableVault({ filename: path.join(dir, "target.volt"), accessKey: currentKey });
+    const target = new VoltStore(targetVault); stores.push(target);
+    target.createEntry({
+      schema: 1,
+      title: "State to replace",
+      projects: [],
+      fields: [{ id: randomUUID(), key: "old", value: "old-secret", visibility: "secret", generator: null }],
+    });
+    const before = JSON.stringify(target.exportLogicalState());
+    const info = target.inspectPortableSnapshot(snapshot);
+    assert.equal(info.format, "exocortex-personal-volt");
+    assert.throws(() => target.restorePortableSnapshot(snapshot, { accessKey: "wrong key", digest: "wrong-attempt" }), /incorrect|damaged/);
+    assert.equal(JSON.stringify(target.exportLogicalState()), before);
+
+    target.restorePortableSnapshot(snapshot, { accessKey: sourceKey, digest: "portable-digest" });
+    assert.equal(target.revealField(restoredEntry.id, restoredEntry.fields[0].id).value, "portable-recovery-secret");
+    assert.equal(target.getSetting("trash_retention_days"), "61");
+    assert.equal(target.getStats().entries, 1);
+    target.close(); stores.pop();
+
+    const reopened = unlockPortableVault({ filename: targetVault.filename, accessKey: currentKey });
+    reopened.masterKey.fill(0);
+    assert.throws(() => unlockPortableVault({ filename: targetVault.filename, accessKey: sourceKey }), /could not be unlocked/);
+  } finally { for (const store of stores) store.close(); rmSync(dir, { recursive: true, force: true }); }
+});
