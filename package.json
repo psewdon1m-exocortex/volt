@@ -20,7 +20,7 @@
     "cookie-parser": "^1.4.7",
     "express": "^5.1.0",
     "fflate": "^0.8.2",
-    "multer": "^2.0.2",
+    "multer": "^2.4.0",
     "react": "^19.2.0",
     "react-dom": "^19.2.0",
     "reflect-metadata": "^0.2.2"
