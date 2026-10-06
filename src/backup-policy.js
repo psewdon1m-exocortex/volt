@@ -47,9 +47,12 @@ export function mountBackupPolicy(root, options) {
     if (!draft.dirty) { draft.value = String(current); draft.confirmed = current; draft.revision = policy.revision; }
     return draft;
   }
+  const archiveAvailable = () => policy?.archive?.available !== false;
+  const primaryKind = () => archiveAvailable() ? "archive" : "mirror";
+  const combined = () => archiveAvailable() && Boolean(policy?.mirror);
   const schedule = (enabled, intervalHours, expectedRevision) => ({
-    kind: policy.mirror ? "schedule-all" : "schedule",
-    ...(policy.mirror ? {} : { pipeline: "archive" }), enabled, intervalHours,
+    kind: combined() ? "schedule-all" : "schedule",
+    ...(combined() ? {} : { pipeline: primaryKind() }), enabled, intervalHours,
     expectedRevision, requestId: crypto.randomUUID(),
   });
   function render(force = false) {
@@ -97,17 +100,17 @@ export function mountBackupPolicy(root, options) {
     })));
     root.append(error);
     for (const kind of ["archive", "mirror"]) {
-      const settings = policy[kind]; if (!settings) continue;
+      const settings = policy[kind]; if (!settings || kind === "archive" && !archiveAvailable()) continue;
       const current = kind === "mirror" ? settings.intervalMinutes / 60 : settings.intervalHours;
       const group = node("section", undefined, "exo-agent-group");
       const observed = policy.observed?.[kind] ?? {};
       statuses.append(statusRow(kind === "archive" ? policy.mirror ? "Basic pipeline status:" : "Pipeline status:"
         : "Advanced volt pipeline status:", observed, applied));
-      if (kind === "archive") {
+      if (kind === primaryKind()) {
         const draft = draftFor(kind, current), controls = node("div", undefined, "exo-policy-controls");
         const enableLabel = node("label", undefined, "exo-policy-toggle");
         const checkbox = node("input"); checkbox.type = "checkbox"; checkbox.checked = settings.enabled;
-        checkbox.indeterminate = Boolean(policy.mirror && settings.enabled !== policy.mirror.enabled);
+        checkbox.indeterminate = Boolean(combined() && settings.enabled !== policy.mirror.enabled);
         checkbox.disabled = busy || policy.paused; checkbox.setAttribute("aria-label", "Enable automatic backups");
         enableLabel.append(checkbox, node("span", "Enable automatic backups"));
         checkbox.onchange = () => {
@@ -137,7 +140,7 @@ export function mountBackupPolicy(root, options) {
         input.onkeydown = event => { if (event.key === "Enter") { event.preventDefault(); commit(); } };
         input.onblur = () => { commit(); if (!busy) render(); };
         controls.append(enableLabel, intervalLabel); group.append(controls);
-        if (policy.mirror && (settings.enabled !== policy.mirror.enabled || settings.intervalHours * 60 !== policy.mirror.intervalMinutes))
+        if (combined() && (settings.enabled !== policy.mirror.enabled || settings.intervalHours * 60 !== policy.mirror.intervalMinutes))
           group.append(node("p", "The two saved schedules differ. Choose an interval and save it to align both pipelines.", "exo-agent-muted"));
         if (draft.dirty && draft.error) group.append(action("Discard interval draft", () => { drafts.delete(kind); render(); }));
         if (draft.review) {
