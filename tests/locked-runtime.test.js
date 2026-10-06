@@ -35,6 +35,7 @@ test("cold runtime stays locked with a device key and opens only after a valid o
     assert.equal((await fetch(base + "/api/v1/session").then(r => r.json())).locked, true);
     assert.equal((await fetch(base + "/shared")).status, 200);
     assert.equal((await fetch(base + "/share/demo-id")).status, 200);
+    assert.equal((await fetch(base + "/share/demo-id?legacy=1")).status, 200);
     assert.equal((await fetch(base + "/unknown-probe")).status, 404);
     assert.equal((await login("incorrect-runtime-key")).status, 401);
     assert.equal(store, undefined);

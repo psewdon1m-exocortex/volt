@@ -153,7 +153,7 @@ export class ShareService {
 
   policy(id) {
     const row = this.row(id);
-    return { password_required: Boolean(row.password_hash) };
+    return { password_required: Boolean(row.password_hash), expires_at: row.expires_at };
   }
 
   unlock(id, token, password, address) {

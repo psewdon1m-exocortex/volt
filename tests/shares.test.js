@@ -45,7 +45,13 @@ test("Shares expose only selected snapshot fields and enforce password, policy a
   const persistedShare = JSON.stringify(store.db.prepare("SELECT * FROM shares WHERE id = ?").get(id));
   assert.equal(persistedShare.includes(token), false);
   assert.equal(persistedShare.includes("separate-channel"), false);
+  const publicPolicy = await json(await fetch(`${base}/public/shares/${id}/policy`));
+  assert.equal(publicPolicy.status, 200);
+  assert.equal(publicPolicy.body.password_required, true);
+  assert.ok(Date.parse(publicPolicy.body.expires_at) > Date.now());
+  assert.equal(JSON.stringify(publicPolicy.body).includes("first-secret"), false);
   assert.equal((await json(await fetch(`${base}/public/shares/${id}/entry`, { headers: { cookie: ownerCookie } }))).status, 401);
+  assert.equal((await json(await fetch(`${base}/public/shares/${id}/entry?legacy=1`))).status, 401);
   const copied = await json(await fetch(`${base}/api/v1/shares/${id}/link`, { headers: { cookie: ownerCookie } }));
   assert.equal(copied.body.path, share.body.path);
   assert.equal((await json(await fetch(`${base}/api/v1/shares`))).status, 401);
@@ -59,6 +65,10 @@ test("Shares expose only selected snapshot fields and enforce password, policy a
   const unlocked = await fetch(`${base}/public/shares/${id}/session`, { method: "POST", headers: { origin: base, "content-type": "application/json" }, body: JSON.stringify({ token, password: "separate-channel" }) });
   assert.equal(unlocked.status, 200);
   const visitorCookie = unlocked.headers.getSetCookie()[0].split(";")[0];
+  const secondBrowser = await fetch(`${base}/public/shares/${id}/session`, { method: "POST", headers: { origin: base, "content-type": "application/json" }, body: JSON.stringify({ token, password: "separate-channel" }) });
+  assert.equal(secondBrowser.status, 200);
+  const secondBrowserCookie = secondBrowser.headers.getSetCookie()[0].split(";")[0];
+  assert.equal((await json(await fetch(`${base}/public/shares/${id}/entry`, { headers: { cookie: secondBrowserCookie } }))).status, 200);
   const viewed = await json(await fetch(`${base}/public/shares/${id}/entry`, { headers: { cookie: visitorCookie } }));
   assert.equal(viewed.status, 200);
   assert.equal(viewed.body.title, "Account");
