@@ -54,6 +54,8 @@ test("Shares expose only selected snapshot fields and enforce password, policy a
   assert.equal((await json(await fetch(`${base}/public/shares/${id}/entry?legacy=1`))).status, 401);
   const copied = await json(await fetch(`${base}/api/v1/shares/${id}/link`, { headers: { cookie: ownerCookie } }));
   assert.equal(copied.body.path, share.body.path);
+  const copiedAgain = await json(await fetch(`${base}/api/v1/shares/${id}/link`, { headers: { cookie: ownerCookie } }));
+  assert.equal(copiedAgain.body.path, share.body.path);
   assert.equal((await json(await fetch(`${base}/api/v1/shares`))).status, 401);
   const listing = await json(await fetch(`${base}/api/v1/shares`, { headers: { cookie: ownerCookie } }));
   assert.equal(listing.body.shares[0].field_count, 2);

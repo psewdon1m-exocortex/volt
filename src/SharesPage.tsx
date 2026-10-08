@@ -101,6 +101,7 @@ export function SharesPage({ toast }: { toast: Toast }) {
   const [policy, setPolicy] = useState<ShareRecord | null>(null);
   const [revoke, setRevoke] = useState<ShareRecord | null>(null);
   const [manualLink, setManualLink] = useState<{ id: string; value: string } | null>(null);
+  const [linkBusy, setLinkBusy] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   function load() { api.shares().then(result => setShares(result.shares)).catch(cause => toast(message(cause), "error")).finally(() => setLoading(false)); }
   useEffect(load, []);
@@ -109,11 +110,19 @@ export function SharesPage({ toast }: { toast: Toast }) {
   const visible = filtered.slice(page * 100, (page + 1) * 100);
 
   async function copyLink(id: string) {
+    if (linkBusy) return;
+    setLinkBusy(id);
     try {
       const result = await api.shareLink(id); const url = link(result.path);
+      setExpanded(id); setManualLink({ id, value: url });
       if (await copy(url)) toast("Link copied");
-      else { setExpanded(id); setManualLink({ id, value: url }); toast("Select the link to copy it", "error"); }
+      else toast("Select the visible link and copy it manually", "error");
     } catch (cause) { toast(message(cause), "error"); }
+    finally { setLinkBusy(null); }
+  }
+  async function copyVisibleLink(value: string) {
+    if (await copy(value)) toast("Link copied");
+    else toast("Select the link and copy it manually", "error");
   }
   async function confirmRevoke() {
     if (!revoke) return;
@@ -126,8 +135,8 @@ export function SharesPage({ toast }: { toast: Toast }) {
     <div className="shared-toolbar"><SearchField label="Search Shares" placeholder="Search shared entries" value={query} onChange={value => { setQuery(value); setPage(0); }} /><div className="shared-toolbar-actions"><span>{filtered.length} of {shares.length} · page {page + 1}</span><button className="button" onClick={() => setCreate(true)}>Create Share</button><button className="button secondary" disabled={page === 0} onClick={() => setPage(page - 1)}>Previous</button><button className="button secondary" disabled={(page + 1) * 100 >= filtered.length} onClick={() => setPage(page + 1)}>Next</button></div></div>
     <div className="shared-list-head"><button onClick={() => toggleSort("name")}>Name {sort === "name" ? ascending ? "↑" : "↓" : "↕"}</button><button onClick={() => toggleSort("created")}>Shared since {sort === "created" ? ascending ? "↑" : "↓" : "↕"}</button><span>Access</span></div>
     {loading ? <div className="empty-state"><p>Loading Shares…</p></div> : !visible.length ? <div className="empty-state"><h2>No Shares</h2><p>Create a link to selected fields in a Vault entry.</p></div> : <div className="shared-list">{visible.map(item => <article className={`shared-list-item${expanded === item.id ? " expanded" : ""}`} key={item.id}>
-      <div className="shared-list-row"><button className="shared-list-toggle" aria-expanded={expanded === item.id} onClick={() => setExpanded(expanded === item.id ? null : item.id)}><strong>{item.title}</strong><time>{stamp(item.created_at)}</time><span>View</span></button><button className="shared-copy-button" disabled={item.status !== "active"} onClick={() => void copyLink(item.id)}>Copy link</button></div>
-      {expanded === item.id && <div className="shared-list-details"><dl className="shared-metadata"><div><dt>Password</dt><dd>{item.password_required ? "On" : "Off"}</dd></div><div><dt>Shared since</dt><dd>{stamp(item.created_at)}</dd></div><div><dt>Expires at</dt><dd>{stamp(item.expires_at)}</dd></div><div><dt>Fields</dt><dd>{item.field_count}</dd></div><div><dt>Access</dt><dd>View</dd></div><div><dt>Status</dt><dd>{item.status}</dd></div></dl><p className="muted">Fields: {item.field_names.join(", ") || "Unavailable"} · Revision {item.revision ?? "—"}</p>{manualLink?.id === item.id && <label className="share-manual-link">Share link<input readOnly value={manualLink.value} onFocus={event => event.currentTarget.select()} /></label>}<div className="shared-list-footer"><p>This link opens only the selected fields from this revision.</p><div><button className="button secondary" onClick={() => setPolicy(item)}>Policy</button><button className="button danger-button" onClick={() => setRevoke(item)}>Revoke</button></div></div></div>}
+      <div className="shared-list-row"><button className="shared-list-toggle" aria-expanded={expanded === item.id} onClick={() => setExpanded(expanded === item.id ? null : item.id)}><strong>{item.title}</strong><time>{stamp(item.created_at)}</time><span>View</span></button><button className="shared-copy-button" disabled={item.status !== "active" || linkBusy === item.id} onClick={() => void copyLink(item.id)}>{linkBusy === item.id ? "Loading…" : "Copy link"}</button></div>
+      {expanded === item.id && <div className="shared-list-details"><dl className="shared-metadata"><div><dt>Password</dt><dd>{item.password_required ? "On" : "Off"}</dd></div><div><dt>Shared since</dt><dd>{stamp(item.created_at)}</dd></div><div><dt>Expires at</dt><dd>{stamp(item.expires_at)}</dd></div><div><dt>Fields</dt><dd>{item.field_count}</dd></div><div><dt>Access</dt><dd>View</dd></div><div><dt>Status</dt><dd>{item.status}</dd></div></dl><p className="muted">Fields: {item.field_names.join(", ") || "Unavailable"} · Revision {item.revision ?? "—"}</p>{manualLink?.id === item.id && <div className="share-manual-link"><label>Share link<input readOnly value={manualLink.value} onFocus={event => event.currentTarget.select()} /></label><button type="button" className="button secondary" onClick={() => void copyVisibleLink(manualLink.value)}>Copy again</button></div>}<div className="shared-list-footer"><p>This link opens only the selected fields from this revision.</p><div><button className="button secondary" onClick={() => setPolicy(item)}>Policy</button><button className="button danger-button" onClick={() => setRevoke(item)}>Revoke</button></div></div></div>}
     </article>)}</div>}
     {create && <ShareDialog onClose={() => setCreate(false)} onCreated={load} toast={toast} />}
     {policy && <PolicyDialog share={policy} onClose={() => setPolicy(null)} onUpdated={() => { load(); toast("Share policy updated"); }} />}

@@ -238,6 +238,9 @@ h1, h2, h3, h4, p { margin-top: 0; }
 .shared-list-footer > div { display: flex; gap: 10px; }
 .share-manual-link, .share-form label:not(.share-check) { display: grid; gap: 7px; }
 .share-manual-link input, .share-form input:not([type="checkbox"]), .share-form select { width: 100%; min-height: 40px; padding: 8px 10px; border: 1px solid var(--line-inner); color: var(--white); background: var(--black); }
+.share-manual-link { grid-template-columns: minmax(0,1fr) auto; align-items: end; margin: 16px 0; gap: 10px; }
+.share-manual-link > label { min-width: 0; display: grid; gap: 7px; }
+.share-manual-link > .button { min-width: 124px; }
 .share-form { display: grid; gap: 16px; padding: 20px; }
 .share-form p { margin: 0; color: var(--white-80); }
 .share-form-actions { display: flex; justify-content: flex-end; gap: 10px; }
@@ -613,6 +616,8 @@ h1, h2, h3, h4, p { margin-top: 0; }
 }
 
 @media (max-width: 720px) {
+  .share-manual-link { grid-template-columns: minmax(0,1fr); }
+  .share-manual-link > .button { width: 100%; }
   .share-client-topbar-inner { min-height: 64px; padding: 9px 16px; align-items: flex-start; }
   .share-client-brand { font-size: 22px; }
   .share-client-brand .volt-logo { width: 34px; height: 34px; flex-basis: 34px; }
